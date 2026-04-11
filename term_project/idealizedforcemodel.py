@@ -1,10 +1,12 @@
 import orekit
+from matplotlib.pyplot import savefig
+
 orekit.initVM()
 import os
 from orekit.pyhelpers import setup_orekit_curdir, download_orekit_data_curdir
 
 if not os.path.exists("orekit-data.zip"):
-    download_orekit_data_curdir()   # downloads orekit-data.zip to cwd
+    download_orekit_data_curdir()
 
 setup_orekit_curdir()
 
@@ -33,8 +35,8 @@ eci = FramesFactory.getEME2000()
 itrf = FramesFactory.getITRF(IERSConventions.IERS_2010, True)
 mu = Constants.EIGEN5C_EARTH_MU
 
-# Earth gravity field (includes J2, J3, ...)
-gravity_provider = GravityFieldFactory.getNormalizedProvider(10, 10)
+# Earth gravity field (includes J2 perturbations)
+gravity_provider = GravityFieldFactory.getNormalizedProvider(2, 0)
 gravity_model = HolmesFeatherstoneAttractionModel(itrf, gravity_provider)
 
 
@@ -278,33 +280,29 @@ def draw_earth(ax, R=6.371e6):
 chief_color = "red"
 colors = ["blue", "gold"]   # deputies: blue, yellow
 # Plot 1: Orbital elements
-fig, axes = plt.subplots(2, 3, figsize=(14, 8))
-for ax, vals, title in zip(
-    axes.flat,
+#fig, axes = plt.subplots(2, 3, figsize=(14, 8))
+for vals, title in zip(
     [a_l, e_l, i_l, raan_l, argp_l, M_l],
     ["a (m)", "e", "i (deg)", "RAAN (deg)", "ω (deg)", "M (deg)"]
 ):
+    fig, ax = plt.subplots()
     ax.plot(days_long, vals, linewidth=0.8)
     ax.set_title(title)
     ax.set_xlabel("Days")
     ax.grid(True, linestyle='--', alpha=0.4)
 
+    plt.suptitle("Chief Orbital Elements — 6 Months (J_2)", fontsize=13)
+    plt.tight_layout()
+    plt.show()
 
 
-plt.suptitle("Chief Orbital Elements — 6 Months (Numerical, J2..J10)", fontsize=13)
-plt.tight_layout()
-plt.show()
-
-
-# Plot 2: Formation
-fig = plt.figure(figsize=(14, 12))
-
-ax1 = fig.add_subplot(221, projection='3d')
+# Plot 2a: Earth Frame
+fig1 = plt.figure(figsize=(8, 7))
+ax1 = fig1.add_subplot(111, projection='3d')
 draw_earth(ax1)
 ax1.plot(chief_eci[:, 0], chief_eci[:, 1], chief_eci[:, 2],
          color='red', linewidth=1.2, label='Chief')
 
-# plot all deputies
 for k, arr in enumerate(dep_eci_exag):
     ax1.plot(arr[:, 0], arr[:, 1], arr[:, 2],
              color=colors[k], linewidth=0.9, alpha=0.85, label=labels[k])
@@ -321,12 +319,21 @@ lim = 8e6
 ax1.set_xlim(-lim, lim)
 ax1.set_ylim(-lim, lim)
 ax1.set_zlim(-lim, lim)
-ax1.set_title(f'Earth frame (deputy offset ×{EXAG})', fontsize=10)
+ax1.set_title(f'Earth Frame (deputy offset ×{EXAG})', fontsize=11)
 ax1.legend(fontsize=7, loc='upper left')
 ax1.set_box_aspect([1, 1, 1])
 ax1.tick_params(labelsize=7)
+fig1.suptitle(
+    f'Formation Flying — Earth Frame (5 orbits)\nDeputy offsets ×{EXAG} in ECI',
+    fontsize=11
+)
+fig1.tight_layout()
 
-ax2 = fig.add_subplot(222, projection='3d')
+savefig("figures/Dep_Offsets.png")
+
+# Plot 2b: Hill Frame 3D
+fig2 = plt.figure(figsize=(8, 7))
+ax2 = fig2.add_subplot(111, projection='3d')
 ax2.scatter(0, 0, 0, color='red', s=60, zorder=5, label='Chief')
 for k, arr in enumerate(rel_short):
     ax2.plot(arr[:, 0], arr[:, 1], arr[:, 2],
@@ -335,39 +342,47 @@ for k, arr in enumerate(rel_short):
 ax2.set_xlabel('Radial (m)', fontsize=8)
 ax2.set_ylabel('In-track (m)', fontsize=8)
 ax2.set_zlabel('Cross-track (m)', fontsize=8)
-ax2.set_title('Hill frame (LVLH) — 3D', fontsize=10)
+ax2.set_title('Hill Frame (LVLH) — 3D', fontsize=11)
 ax2.legend(fontsize=7, loc='upper left')
 ax2.set_box_aspect([1, 1, 1])
 ax2.tick_params(labelsize=7)
+fig2.suptitle('Formation Flying — Hill Frame 3D (5 orbits)', fontsize=11)
+fig2.tight_layout()
 
-ax3 = fig.add_subplot(223)
+savefig("figures/Hill_Traj.png")
+
+# Plot 2c: Radial vs In-track
+fig3, ax3 = plt.subplots(figsize=(8, 7))
 ax3.scatter(0, 0, color='red', s=60, zorder=5, label='Chief')
 for k, arr in enumerate(rel_short):
     ax3.plot(arr[:, 0], arr[:, 1], color=colors[k], linewidth=1.0, label=labels[k])
     ax3.scatter(arr[0, 0], arr[0, 1], color=colors[k], s=30, zorder=5)
 ax3.set_xlabel('Radial (m)')
 ax3.set_ylabel('In-track (m)')
-ax3.set_title('Hill frame — Radial vs In-track', fontsize=10)
+ax3.set_title('Hill Frame — Radial vs In-track', fontsize=11)
 ax3.set_aspect('equal')
 ax3.grid(True, linestyle='--', alpha=0.4)
 ax3.legend(fontsize=7)
+fig3.suptitle('Formation Flying — Radial vs In-track (5 orbits)', fontsize=11)
+fig3.tight_layout()
 
-ax4 = fig.add_subplot(224)
+savefig("figures/Radial_Intrack.png")
+
+# Plot 2d: In-track vs Cross-track
+fig4, ax4 = plt.subplots(figsize=(8, 7))
 ax4.scatter(0, 0, color='red', s=60, zorder=5, label='Chief')
 for k, arr in enumerate(rel_short):
     ax4.plot(arr[:, 1], arr[:, 2], color=colors[k], linewidth=1.0, label=labels[k])
     ax4.scatter(arr[0, 1], arr[0, 2], color=colors[k], s=30, zorder=5)
 ax4.set_xlabel('In-track (m)')
 ax4.set_ylabel('Cross-track (m)')
-ax4.set_title('Hill frame — In-track vs Cross-track', fontsize=10)
+ax4.set_title('Hill Frame — In-track vs Cross-track', fontsize=11)
 ax4.set_aspect('equal')
 ax4.grid(True, linestyle='--', alpha=0.4)
 ax4.legend(fontsize=7)
+fig4.suptitle('Formation Flying — In-track vs Cross-track (5 orbits)', fontsize=11)
+fig4.tight_layout()
 
-plt.suptitle(
-    f'Formation Flying — Earth Frame + Hill Frame (5 orbits)\nDeputy offsets ×{EXAG} in ECI plots',
-    fontsize=12
-)
-plt.tight_layout()
+savefig("figures/Intrack_Intrack.png")
+
 plt.show()
-print("Saved: plot2_formation.png")
