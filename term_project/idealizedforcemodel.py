@@ -1,5 +1,11 @@
 import plotting
 import numpy as np
+import matplotlib.pyplot as plt
+
+'''
+TODO: Generalize orbit propagation functions and move them into their own file. Only functions related to ideal orbits
+      should be coming out of this import!
+'''
 from ideal_funcs import run_propagation, get_eci_trajectories, times_short, times_long, colors, labels
 
 # Run both time spans
