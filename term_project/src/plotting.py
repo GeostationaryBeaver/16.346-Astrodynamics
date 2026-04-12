@@ -13,7 +13,7 @@ def draw_earth(ax, R=6.371e6):
     ax.plot_wireframe(x, y, z, color='royalblue', alpha=0.12, linewidth=0.3)
     ax.plot_surface(x, y, z, color='steelblue', alpha=0.07)
 
-def plot_orbital_elements(days_long, a_l, e_l, i_l, raan_l, argp_l, M_l):
+def plot_orbital_elements(days_long, a_l, e_l, i_l, raan_l, argp_l, M_l, path):
     for vals, title in zip(
         [a_l, e_l, i_l, raan_l, argp_l, M_l],
         ["a (m)", "e", "i (deg)", "RAAN (deg)", "ω (deg)", "M (deg)"]
@@ -25,10 +25,10 @@ def plot_orbital_elements(days_long, a_l, e_l, i_l, raan_l, argp_l, M_l):
         ax.grid(True, linestyle='--', alpha=0.4)
         plt.suptitle("Chief Orbital Elements — 6 Months (J_2)", fontsize=13)
         plt.tight_layout()
-        savefig(".")
+        savefig(f"{path}/{title}.png")
 
 
-def plot_earth_frame(chief_eci, dep_eci_exag, snap_idx, colors, labels, EXAG):
+def plot_earth_frame(chief_eci, dep_eci_exag, snap_idx, colors, labels, EXAG, path):
     fig = plt.figure(figsize=(8, 7))
     ax = fig.add_subplot(111, projection='3d')
     draw_earth(ax)
@@ -60,10 +60,10 @@ def plot_earth_frame(chief_eci, dep_eci_exag, snap_idx, colors, labels, EXAG):
         fontsize=11
     )
     fig.tight_layout()
-    savefig("figures/Dep_Offsets.png")
+    savefig(f"{path}/Dep_Offsets.png")
 
 
-def plot_hill_3d(rel_short, colors, labels):
+def plot_hill_3d(rel_short, colors, labels, path):
     fig = plt.figure(figsize=(8, 7))
     ax = fig.add_subplot(111, projection='3d')
     ax.scatter(0, 0, 0, color='red', s=60, zorder=5, label='Chief')
@@ -82,10 +82,10 @@ def plot_hill_3d(rel_short, colors, labels):
     ax.tick_params(labelsize=7)
     fig.suptitle('Formation Flying — Hill Frame 3D (5 orbits)', fontsize=11)
     fig.tight_layout()
-    savefig("figures/Hill_Traj.png")
+    savefig(f"{path}/Hill_Traj.png")
 
 
-def plot_radial_intrack(rel_short, colors, labels):
+def plot_radial_intrack(rel_short, colors, labels, path):
     fig, ax = plt.subplots(figsize=(8, 7))
     ax.scatter(0, 0, color='red', s=60, zorder=5, label='Chief')
 
@@ -101,10 +101,10 @@ def plot_radial_intrack(rel_short, colors, labels):
     ax.legend(fontsize=7)
     fig.suptitle('Formation Flying — Radial vs In-track (5 orbits)', fontsize=11)
     fig.tight_layout()
-    savefig("figures/Radial_Intrack.png")
+    savefig(f"{path}/Radial_Intrack.png")
 
 
-def plot_intrack_crosstrack(rel_short, colors, labels):
+def plot_intrack_crosstrack(rel_short, colors, labels, path):
     fig, ax = plt.subplots(figsize=(8, 7))
     ax.scatter(0, 0, color='red', s=60, zorder=5, label='Chief')
 
@@ -120,4 +120,4 @@ def plot_intrack_crosstrack(rel_short, colors, labels):
     ax.legend(fontsize=7)
     fig.suptitle('Formation Flying — In-track vs Cross-track (5 orbits)', fontsize=11)
     fig.tight_layout()
-    savefig("figures/Intrack_Crosstrack.png")
+    savefig(f"{path}/Intrack_Crosstrack.png")

@@ -1,7 +1,7 @@
 import plotting
 import numpy as np
 import matplotlib.pyplot as plt
-
+from pathlib import Path
 '''
 TODO: Generalize orbit propagation functions and move them into their own file. Only functions related to ideal orbits
       should be coming out of this import!
@@ -23,16 +23,17 @@ dep_eci_exag = [chief_eci + EXAG * (arr - chief_eci) for arr in dep_eci]
 n_snaps = 16
 snap_idx = np.linspace(0, len(times_long) - 1, n_snaps, dtype=int)
 
-
-# ------------------------------------
-# 7. PLOTS
-# ------------------------------------
+#save directory
+# Get the directory of this script (e.g., src/)
+THIS_DIR = Path(__file__).resolve().parent
+# Go up one level (to project root), then down into figs
+path = THIS_DIR.parent / "figs" / "ideal_force_model"
 
 # Plot 1: Orbital elements
-plotting.plot_orbital_elements(days_long, a_l, e_l, i_l, raan_l, argp_l, M_l)
-plotting.plot_earth_frame(chief_eci, dep_eci_exag, snap_idx, colors, labels, EXAG)
-plotting.plot_hill_3d(rel_short, colors, labels)
-plotting.plot_radial_intrack(rel_short, colors, labels)
-plotting.plot_intrack_crosstrack(rel_short, colors, labels)
+plotting.plot_orbital_elements(days_long, a_l, e_l, i_l, raan_l, argp_l, M_l, path)
+plotting.plot_earth_frame(chief_eci, dep_eci_exag, snap_idx, colors, labels, EXAG, path)
+plotting.plot_hill_3d(rel_short, colors, labels, path)
+plotting.plot_radial_intrack(rel_short, colors, labels, path)
+plotting.plot_intrack_crosstrack(rel_short, colors, labels, path)
 
 plt.show()
