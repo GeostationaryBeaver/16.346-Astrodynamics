@@ -9,7 +9,6 @@ if not os.path.exists("orekit-data.zip"):
 setup_orekit_curdir()
 
 import numpy as np
-import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D  # noqa: F401
 from org.orekit.utils import PVCoordinates
 from org.hipparchus.geometry.euclidean.threed import Vector3D
