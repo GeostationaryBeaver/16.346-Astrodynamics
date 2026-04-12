@@ -25,6 +25,7 @@ def plot_orbital_elements(days_long, a_l, e_l, i_l, raan_l, argp_l, M_l):
         ax.grid(True, linestyle='--', alpha=0.4)
         plt.suptitle("Chief Orbital Elements — 6 Months (J_2)", fontsize=13)
         plt.tight_layout()
+        savefig(".")
 
 
 def plot_earth_frame(chief_eci, dep_eci_exag, snap_idx, colors, labels, EXAG):
