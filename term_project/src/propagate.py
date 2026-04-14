@@ -47,63 +47,6 @@ def to_keplerian(orbit):
     return KeplerianOrbit.cast_(OrbitType.KEPLERIAN.convertType(orbit))
 
 
-
-# ------------------------------------
-# ROE -> ABSOLUTE KEPLERIAN ELEMENTS
-# ------------------------------------
-# def make_j2_invariant_two_deputy_roes(
-#     chief_orbit,
-#     target_side_km: float,
-#     phase_deg=(0.0, 90.0),
-# ) -> list:
-#     """
-#     da = 0 by construction (avoids differential mean motion).
-#     Deputies are differentiated by eccentricity vector phase only.
-#     Inclination vector phase is fixed to u0 for ALL deputies → N(u0) = 0.
-#     dl is computed to zero T(u0).
-#
-#     Sizing:
-#       a·|δi| = L/2   (cross-track semi-amplitude fills ±L/2 in N)
-#       a·|δe| = L/4   (in-plane: radial ±L/4, along-track ±L/2)
-#     """
-#     a  = float(chief_orbit.getA())
-#     u0 = (float(chief_orbit.getPerigeeArgument())
-#           + float(chief_orbit.getMeanAnomaly()))
-#
-#     L      = target_side_km * 1e3          # box side in metres
-#     di_mag = L / (2.0 * a)                 # cross-track
-#     de_mag = L / (4.0 * a)                 # in-plane
-#
-#     # --- safety check: these must be tiny ---
-#     assert de_mag < 0.01, f"de_mag={de_mag:.4f} is too large — check units"
-#     assert di_mag < 0.01, f"di_mag={di_mag:.4f} is too large — check units"
-#
-#     roes = []
-#     for ph in phase_deg:
-#         p   = np.radians(ph)
-#         dex = de_mag * np.cos(p)
-#         dey = de_mag * np.sin(p)
-#
-#         # inclination vector: phase = u0 for ALL deputies → N(u0)=0
-#         # N(u)/a = dix·sin(u) − diy·cos(u)
-#         # At u=u0: dix·sin(u0) − diy·cos(u0) = di_mag·[cos(u0)·sin(u0) − sin(u0)·cos(u0)] = 0 ✓
-#         dix = di_mag * np.cos(u0)
-#         diy = di_mag * np.sin(u0)
-#
-#         # dl zeros T(u0): T(u)/a = dl − 2·dex·sin(u) + 2·dey·cos(u)
-#         # 0 = dl − 2·dex·sin(u0) + 2·dey·cos(u0)
-#         dl  = 2.0 * dex * np.sin(u0) - 2.0 * dey * np.cos(u0)
-#
-#         roes.append(dict(
-#             da  = 0.0,          # nonzero da causes orbital drift
-#             dl  = float(dl),
-#             dex = float(dex),
-#             dey = float(dey),
-#             dix = float(dix),
-#             diy = float(diy),
-#         ))
-#     return roes
-
 def make_along_track_deputies(
     chief_orbit,
     separation_m: float = 1000.0,
