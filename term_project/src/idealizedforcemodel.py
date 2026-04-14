@@ -11,7 +11,7 @@ from propagate import GravityFieldFactory
 from propagate import KeplerianOrbit, PositionAngleType, make_along_track_deputies
 
 
-from refactored_ideal_funcs import run_propagation, get_eci_trajectories, apply_ROE
+from propagate import run_propagation, get_eci_trajectories, apply_ROE
 
 
 #save directory
