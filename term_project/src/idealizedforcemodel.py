@@ -9,8 +9,6 @@ from propagate import Constants, IERSConventions
 from propagate import HolmesFeatherstoneAttractionModel
 from propagate import GravityFieldFactory
 from propagate import KeplerianOrbit, PositionAngleType, make_along_track_deputies
-
-
 from propagate import run_propagation, get_eci_trajectories, apply_ROE
 
 
