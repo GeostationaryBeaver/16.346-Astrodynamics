@@ -68,8 +68,8 @@ rho = 1.2e-4   # ~840 m amplitude (a * rho)
 deputy_roes = make_along_track_deputies(chief_orbit, 0.5 * 1e3)
 
 labels = [
-    "Deputy 1 (PCO, φ=0°)",
-    "Deputy 2 (PCO, φ=90°)",
+    "Deputy 1",
+    "Deputy 2",
 ]
 colors = ["steelblue", "tomato"]
 
@@ -88,11 +88,6 @@ N_long = 1500
 times_short = np.linspace(0, T_short, N_short)
 times_long = np.linspace(0, T_long, N_long)
 
-
-
-
-
-
 (a, e, i, raan, argp, M, alt, rel, dist) = run_propagation(times_short, initial_date,
                                                            perturbs, chief_orbit,
                                                            deputy_orbits)
@@ -100,17 +95,9 @@ times_long = np.linspace(0, T_long, N_long)
 days_short = times_short / 86400
 days_long = times_long / 86400
 
-# ECI trajectories for plotting
-#chief_eci, dep_eci = get_eci_trajectories(times_long)
-
-# EXAG = 75 #deputies exaggerated 75x to improve readability
-# dep_eci_exag = [chief_eci + EXAG * (arr - chief_eci) for arr in dep_eci]
-# n_snaps = 16
-# snap_idx = np.linspace(0, len(times_long) - 1, n_snaps, dtype=int)
 
 # Plot 1: Orbital elements
 plotting.plot_orbital_elements(days_short, a, e, i, raan, argp, M, path)
-# plotting.plot_earth_frame(chief_eci, dep_eci_exag, snap_idx, colors, labels, EXAG, path)
 plotting.plot_hill_3d(rel, colors, labels, path)
 plotting.plot_radial_intrack(rel, colors, labels, path)
 plotting.plot_intrack_crosstrack(rel, colors, labels, path)

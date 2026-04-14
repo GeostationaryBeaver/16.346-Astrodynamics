@@ -66,7 +66,7 @@ def plot_hill_3d(rel_short, colors, labels, path):
     for k, arr in enumerate(rel_short):
         ax.plot(arr[:, 0]/1e3, arr[:, 1]/1e3, arr[:, 2]/1e3,
                 color=colors[k], linewidth=0.9, alpha=0.85, label=labels[k])
-        ax.scatter(*arr[0]/1e3, color=colors[k], s=30, zorder=5)
+        #ax.scatter(*arr[0]/1e3, color=colors[k], s=30, zorder=5)
 
     ax.set_xlabel('Radial (km)', fontsize=8)
     ax.set_ylabel('In-track (km)', fontsize=8)
@@ -85,7 +85,7 @@ def plot_radial_intrack(rel_short, colors, labels, path):
 
     for k, arr in enumerate(rel_short):
         ax.plot(arr[:, 0]/1e3, arr[:, 1]/1e3, color=colors[k], linewidth=1.0, label=labels[k])
-        ax.scatter(arr[0, 0]/1e3, arr[0, 1]/1e3, color=colors[k], s=30, zorder=5)
+        #ax.scatter(arr[0, 0]/1e3, arr[0, 1]/1e3, color=colors[k], s=30, zorder=5)
 
     ax.set_xlabel('Radial (km)')
     ax.set_ylabel('In-track (km)')
@@ -103,7 +103,7 @@ def plot_intrack_crosstrack(rel_short, colors, labels, path):
 
     for k, arr in enumerate(rel_short):
         ax.plot(arr[:, 1]/1e3, arr[:, 2]/1e3, color=colors[k], linewidth=1.0, label=labels[k])
-        ax.scatter(arr[0, 1]/1e3, arr[0, 2]/1e3, color=colors[k], s=30, zorder=5)
+        #ax.scatter(arr[0, 1]/1e3, arr[0, 2]/1e3, color=colors[k], s=30, zorder=5)
 
     ax.set_xlabel('In-track (km)')
     ax.set_ylabel('Cross-track (km)')

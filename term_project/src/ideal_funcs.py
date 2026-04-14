@@ -22,22 +22,8 @@ from org.orekit.forces.gravity import HolmesFeatherstoneAttractionModel
 from org.orekit.forces.gravity.potential import GravityFieldFactory
 from org.hipparchus.ode.nonstiff import DormandPrince853Integrator
 
-# ------------------------------------
-# 1. SETUP
-# ------------------------------------
-utc = TimeScalesFactory.getUTC()
-initial_date = AbsoluteDate(2026, 1, 1, 12, 0, 0.0, utc)
 
-eci = FramesFactory.getEME2000()
-itrf = FramesFactory.getITRF(IERSConventions.IERS_2010, True)
-mu = Constants.EIGEN5C_EARTH_MU
-
-# Earth gravity field (includes J2 perturbations)
-gravity_provider = GravityFieldFactory.getNormalizedProvider(2, 0)
-gravity_model = HolmesFeatherstoneAttractionModel(itrf, gravity_provider)
-
-
-def create_propagator(initial_orbit):
+def create_propagator(initial_orbit, forces):
     min_step = 0.1
     max_step = 300.0
 
@@ -51,7 +37,8 @@ def create_propagator(initial_orbit):
 
     initial_state = SpacecraftState(initial_orbit)
     propagator.setInitialState(initial_state)
-    propagator.addForceModel(gravity_model)
+    for force in forces:
+        propagator.addForceModel(force)
     return propagator
 
 
@@ -60,25 +47,127 @@ def to_keplerian(orbit):
     return KeplerianOrbit.cast_(OrbitType.KEPLERIAN.convertType(orbit))
 
 
-# ------------------------------------
-# 2. CHIEF ORBIT
-# ------------------------------------
-chief_orbit = KeplerianOrbit(
-    float(7000e3),           # a (m)
-    float(0.0),              # e
-    float(np.radians(98.0)), # i
-    float(0.0),              # argument of perigee
-    float(0.0),              # RAAN
-    float(0.0),              # mean anomaly
-    PositionAngleType.MEAN,
-    eci,
-    initial_date,
-    mu
-)
 
 # ------------------------------------
-# 3. ROE -> ABSOLUTE KEPLERIAN ELEMENTS
+# ROE -> ABSOLUTE KEPLERIAN ELEMENTS
 # ------------------------------------
+# def make_j2_invariant_two_deputy_roes(
+#     chief_orbit,
+#     target_side_km: float,
+#     phase_deg=(0.0, 90.0),
+# ) -> list:
+#     """
+#     da = 0 by construction (avoids differential mean motion).
+#     Deputies are differentiated by eccentricity vector phase only.
+#     Inclination vector phase is fixed to u0 for ALL deputies → N(u0) = 0.
+#     dl is computed to zero T(u0).
+#
+#     Sizing:
+#       a·|δi| = L/2   (cross-track semi-amplitude fills ±L/2 in N)
+#       a·|δe| = L/4   (in-plane: radial ±L/4, along-track ±L/2)
+#     """
+#     a  = float(chief_orbit.getA())
+#     u0 = (float(chief_orbit.getPerigeeArgument())
+#           + float(chief_orbit.getMeanAnomaly()))
+#
+#     L      = target_side_km * 1e3          # box side in metres
+#     di_mag = L / (2.0 * a)                 # cross-track
+#     de_mag = L / (4.0 * a)                 # in-plane
+#
+#     # --- safety check: these must be tiny ---
+#     assert de_mag < 0.01, f"de_mag={de_mag:.4f} is too large — check units"
+#     assert di_mag < 0.01, f"di_mag={di_mag:.4f} is too large — check units"
+#
+#     roes = []
+#     for ph in phase_deg:
+#         p   = np.radians(ph)
+#         dex = de_mag * np.cos(p)
+#         dey = de_mag * np.sin(p)
+#
+#         # inclination vector: phase = u0 for ALL deputies → N(u0)=0
+#         # N(u)/a = dix·sin(u) − diy·cos(u)
+#         # At u=u0: dix·sin(u0) − diy·cos(u0) = di_mag·[cos(u0)·sin(u0) − sin(u0)·cos(u0)] = 0 ✓
+#         dix = di_mag * np.cos(u0)
+#         diy = di_mag * np.sin(u0)
+#
+#         # dl zeros T(u0): T(u)/a = dl − 2·dex·sin(u) + 2·dey·cos(u)
+#         # 0 = dl − 2·dex·sin(u0) + 2·dey·cos(u0)
+#         dl  = 2.0 * dex * np.sin(u0) - 2.0 * dey * np.cos(u0)
+#
+#         roes.append(dict(
+#             da  = 0.0,          # nonzero da causes orbital drift
+#             dl  = float(dl),
+#             dex = float(dex),
+#             dey = float(dey),
+#             dix = float(dix),
+#             diy = float(diy),
+#         ))
+#     return roes
+
+def make_along_track_deputies(
+    chief_orbit,
+    separation_m: float = 1000.0,
+    osc_fraction: float = 0.1,
+) -> list:
+    """
+    Place two deputies along the along-track axis at ±separation_m from
+    the chief at epoch, with small controlled oscillation amplitudes.
+
+    Parameters
+    ----------
+    chief_orbit   : KeplerianOrbit
+    separation_m  : desired initial T-separation in metres (default 1 km)
+    osc_fraction  : oscillation amplitude as fraction of separation (default 0.1)
+                    → deputies drift at most osc_fraction*separation_m per orbit
+                    before secular J2 terms act
+
+    Logic
+    -----
+    R₀ = 0, N₀ = 0 for both deputies.
+    T₀ = +separation_m (Deputy 1), −separation_m (Deputy 2).
+
+    From linearized RTN at epoch u₀:
+      (1) R₀/a =  dex·cos(u₀) + dey·sin(u₀)       → sets eccentricity vector phase
+      (2) T₀/a =  dl − 2·dex·sin(u₀) + 2·dey·cos(u₀) → sets dl
+      (3) N₀/a =  dix·sin(u₀) − diy·cos(u₀)        → sets inclination vector phase
+    """
+    a  = float(chief_orbit.getA())
+    u0 = (float(chief_orbit.getPerigeeArgument())
+          + float(chief_orbit.getMeanAnomaly()))
+
+    # oscillation amplitudes — small fraction of desired separation
+    de_mag = osc_fraction * separation_m / a
+    di_mag = osc_fraction * separation_m / a
+
+    # Step 3: R₀=0 → cos(u₀ − φ_e) = 0 → φ_e = u₀ + π/2
+    # This gives dex·cos(u₀) + dey·sin(u₀) = 0 ✓
+    phi_e = u0 + np.pi / 2.0
+    dex   = de_mag * np.cos(phi_e)
+    dey   = de_mag * np.sin(phi_e)
+
+    # Step 5: N₀=0 → φ_i = u₀ exactly
+    # dix·sin(u₀) − diy·cos(u₀) = 0 ✓
+    dix = di_mag * np.cos(u0)
+    diy = di_mag * np.sin(u0)
+
+    roes = []
+    for sign in (1.0, -1.0):
+        T0 = sign * separation_m
+
+        # Step 4: solve for dl from equation (2)
+        dl = (T0 / a) + 2.0 * dex * np.sin(u0) - 2.0 * dey * np.cos(u0)
+
+        roes.append(dict(
+            da  = 0.0,
+            dl  = float(dl),
+            dex = float(dex),
+            dey = float(dey),
+            dix = float(dix),
+            diy = float(diy),
+        ))
+
+    return roes
+
 def apply_ROE(chief_orbit, roe):
     """
     Quasi-nonsingular ROE convention:
@@ -117,55 +206,27 @@ def apply_ROE(chief_orbit, roe):
         PositionAngleType.MEAN,
         chief_orbit.getFrame(),
         chief_orbit.getDate(),
-        mu
+        Constants.EIGEN5C_EARTH_MU #Earth's mu
     )
 
-
-# ------------------------------------
-# 4. DEPUTY ROEs (2 deputies only)
-# ------------------------------------
-rho = 1.2e-4   # ~840 m amplitude (a * rho)
-
-deputy_roes = [
-    dict(da=0, dl=0,      dex=rho,  dey=0.0,  dix=rho, diy=rho),    # Deputy 1
-    dict(da=0, dl=0,      dex=0.0,  dey=rho,  dix=rho, diy=-rho),   # Deputy 2
-]
-
-labels = [
-    "Deputy 1 (PCO, φ=0°)",
-    "Deputy 2 (PCO, φ=90°)",
-]
-colors = ["steelblue", "tomato"]
-
-deputy_orbits = [apply_ROE(chief_orbit, r) for r in deputy_roes]
-
-# ------------------------------------
-# 5. TIME ARRAYS
-# ------------------------------------
-T_orb = 2 * np.pi * float(np.sqrt((7000e3)**3 / mu))
-T_short = 5 * T_orb
-T_long = 6 * 30 * 24 * 3600
-
-N_short = 500
-N_long = 1500
-
-times_short = np.linspace(0, T_short, N_short)
-times_long = np.linspace(0, T_long, N_long)
 
 
 # ------------------------------------
 # 6. PROPAGATION HELPER
 # ------------------------------------
-def run_propagation(times):
-    chief_prop = create_propagator(chief_orbit)
-    dep_props = [create_propagator(o) for o in deputy_orbits]
+def run_propagation(times, init_date, forces, chief_orbit, deputy_orbits):
+    chief_prop = create_propagator(chief_orbit, forces)
+    dep_props = [create_propagator(o, forces) for o in deputy_orbits]
 
     a_v, e_v, i_v, raan_v, argp_v, M_v, alt_v = [], [], [], [], [], [], []
     rel = [[] for _ in deputy_orbits]
     dist = [[] for _ in deputy_orbits]
 
+    eci = FramesFactory.getEME2000()
+    itrf = FramesFactory.getITRF(IERSConventions.IERS_2010, True)
+
     for t in times:
-        date_t = initial_date.shiftedBy(float(t))
+        date_t = init_date.shiftedBy(float(t))
 
         # Chief
         chief_state = chief_prop.propagate(date_t)
@@ -221,15 +282,17 @@ def run_propagation(times):
     )
 
 
-def get_eci_trajectories(times):
+def get_eci_trajectories(times, init_date, chief_orbit, deputy_orbits):
     chief_prop = create_propagator(chief_orbit)
     dep_props = [create_propagator(o) for o in deputy_orbits]
 
     chief_pts = []
     dep_pts = [[] for _ in deputy_orbits]
 
+    eci = FramesFactory.getEME2000()
+
     for t in times:
-        date_t = initial_date.shiftedBy(float(t))
+        date_t = init_date.shiftedBy(float(t))
 
         c_state = chief_prop.propagate(date_t)
         c_pos = c_state.getPVCoordinates(eci).getPosition()
