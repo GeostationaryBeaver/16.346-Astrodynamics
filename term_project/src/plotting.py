@@ -54,10 +54,6 @@ def plot_earth_frame(chief_eci, dep_eci_exag, snap_idx, colors, labels, EXAG, pa
     ax.legend(fontsize=7, loc='upper left')
     ax.set_box_aspect([1, 1, 1])
     ax.tick_params(labelsize=7)
-    fig.suptitle(
-        f'Formation Flying — Earth Frame (5 orbits)\nDeputy offsets ×{EXAG} in ECI',
-        fontsize=11
-    )
     fig.tight_layout()
     savefig(f"{path}/Dep_Offsets.png")
 
@@ -68,18 +64,17 @@ def plot_hill_3d(rel_short, colors, labels, path):
     ax.scatter(0, 0, 0, color='red', s=60, zorder=5, label='Chief')
 
     for k, arr in enumerate(rel_short):
-        ax.plot(arr[:, 0], arr[:, 1], arr[:, 2],
+        ax.plot(arr[:, 0]/1e3, arr[:, 1]/1e3, arr[:, 2]/1e3,
                 color=colors[k], linewidth=0.9, alpha=0.85, label=labels[k])
-        ax.scatter(*arr[0], color=colors[k], s=30, zorder=5)
+        ax.scatter(*arr[0]/1e3, color=colors[k], s=30, zorder=5)
 
-    ax.set_xlabel('Radial (m)', fontsize=8)
-    ax.set_ylabel('In-track (m)', fontsize=8)
-    ax.set_zlabel('Cross-track (m)', fontsize=8)
+    ax.set_xlabel('Radial (km)', fontsize=8)
+    ax.set_ylabel('In-track (km)', fontsize=8)
+    ax.set_zlabel('Cross-track (km)', fontsize=8)
     ax.set_title('Hill Frame (LVLH) — 3D', fontsize=11)
     ax.legend(fontsize=7, loc='upper left')
     ax.set_box_aspect([1, 1, 1])
     ax.tick_params(labelsize=7)
-    fig.suptitle('Formation Flying — Hill Frame 3D (5 orbits)', fontsize=11)
     fig.tight_layout()
     savefig(f"{path}/Hill_Traj.png")
 
@@ -89,16 +84,15 @@ def plot_radial_intrack(rel_short, colors, labels, path):
     ax.scatter(0, 0, color='red', s=60, zorder=5, label='Chief')
 
     for k, arr in enumerate(rel_short):
-        ax.plot(arr[:, 0], arr[:, 1], color=colors[k], linewidth=1.0, label=labels[k])
-        ax.scatter(arr[0, 0], arr[0, 1], color=colors[k], s=30, zorder=5)
+        ax.plot(arr[:, 0]/1e3, arr[:, 1]/1e3, color=colors[k], linewidth=1.0, label=labels[k])
+        ax.scatter(arr[0, 0]/1e3, arr[0, 1]/1e3, color=colors[k], s=30, zorder=5)
 
-    ax.set_xlabel('Radial (m)')
-    ax.set_ylabel('In-track (m)')
+    ax.set_xlabel('Radial (km)')
+    ax.set_ylabel('In-track (km)')
     ax.set_title('Hill Frame — Radial vs In-track', fontsize=11)
     ax.set_aspect('equal')
     ax.grid(True, linestyle='--', alpha=0.4)
     ax.legend(fontsize=7)
-    fig.suptitle('Formation Flying — Radial vs In-track (5 orbits)', fontsize=11)
     fig.tight_layout()
     savefig(f"{path}/Radial_Intrack.png")
 
@@ -108,15 +102,46 @@ def plot_intrack_crosstrack(rel_short, colors, labels, path):
     ax.scatter(0, 0, color='red', s=60, zorder=5, label='Chief')
 
     for k, arr in enumerate(rel_short):
-        ax.plot(arr[:, 1], arr[:, 2], color=colors[k], linewidth=1.0, label=labels[k])
-        ax.scatter(arr[0, 1], arr[0, 2], color=colors[k], s=30, zorder=5)
+        ax.plot(arr[:, 1]/1e3, arr[:, 2]/1e3, color=colors[k], linewidth=1.0, label=labels[k])
+        ax.scatter(arr[0, 1]/1e3, arr[0, 2]/1e3, color=colors[k], s=30, zorder=5)
 
-    ax.set_xlabel('In-track (m)')
-    ax.set_ylabel('Cross-track (m)')
+    ax.set_xlabel('In-track (km)')
+    ax.set_ylabel('Cross-track (km)')
     ax.set_title('Hill Frame — In-track vs Cross-track', fontsize=11)
     ax.set_aspect('equal')
     ax.grid(True, linestyle='--', alpha=0.4)
     ax.legend(fontsize=7)
-    fig.suptitle('Formation Flying — In-track vs Cross-track (5 orbits)', fontsize=11)
     fig.tight_layout()
     savefig(f"{path}/Intrack_Crosstrack.png")
+
+def plot_mean_separation_with_exits(times_s, rel_list, labels, colors, box_side_km, title="", save_path=None):
+    days = np.asarray(times_s) / 86400.0
+
+    dep_sep_km = [np.linalg.norm(r, axis=1) / 1000.0 for r in rel_list]
+
+    fig, ax = plt.subplots(figsize=(10, 5))
+    for k, d in enumerate(dep_sep_km):
+        ax.plot(days, d, color=colors[k], label=f"{labels[k]}-Chief")
+
+        # box exit marker
+        if np.isscalar(box_side_km):
+            L = np.array([box_side_km, box_side_km, box_side_km]) * 1000.0
+        else:
+            L = np.array(box_side_km) * 1000.0
+        half = 0.5 * L
+        outside = np.any(np.abs(rel_list[k]) > half, axis=1)
+        if np.any(outside):
+            idx = int(np.argmax(outside))
+            x = days[idx]
+            ax.axvline(x, color=colors[k], ls="--", alpha=0.8)
+            ax.plot(x, d[idx], "o", color=colors[k], ms=5)
+
+    ax.set_xlabel("Time [days]")
+    ax.set_ylabel("Separation [km]")
+    ax.set_title(title if title else "Deputy-Chief Separation")
+    ax.grid(True, alpha=0.3)
+    ax.legend()
+
+    if save_path is not None:
+        fig.savefig(f"{save_path}/separations.png", dpi=200, bbox_inches="tight")
+    return fig, ax
