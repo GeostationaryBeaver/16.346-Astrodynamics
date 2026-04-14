@@ -3,12 +3,12 @@ import numpy as np
 import matplotlib.pyplot as plt
 from pathlib import Path
 
-from refactored_ideal_funcs import AbsoluteDate, TimeScalesFactory
-from refactored_ideal_funcs import FramesFactory
-from refactored_ideal_funcs import Constants, IERSConventions
-from refactored_ideal_funcs import HolmesFeatherstoneAttractionModel
-from refactored_ideal_funcs import GravityFieldFactory
-from refactored_ideal_funcs import KeplerianOrbit, PositionAngleType, make_along_track_deputies
+from ideal_funcs import AbsoluteDate, TimeScalesFactory
+from ideal_funcs import FramesFactory
+from ideal_funcs import Constants, IERSConventions
+from ideal_funcs import HolmesFeatherstoneAttractionModel
+from ideal_funcs import GravityFieldFactory
+from ideal_funcs import KeplerianOrbit, PositionAngleType, make_along_track_deputies
 
 
 from refactored_ideal_funcs import run_propagation, get_eci_trajectories, apply_ROE
