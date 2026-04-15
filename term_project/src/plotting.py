@@ -1,8 +1,6 @@
 import matplotlib.pyplot as plt
 import numpy as np
 
-from matplotlib.pyplot import savefig
-
 
 def draw_earth(ax, R=6.371e6):
     u = np.linspace(0, 2*np.pi, 36)
@@ -13,7 +11,7 @@ def draw_earth(ax, R=6.371e6):
     ax.plot_wireframe(x, y, z, color='royalblue', alpha=0.12, linewidth=0.3)
     ax.plot_surface(x, y, z, color='steelblue', alpha=0.07)
 
-def plot_orbital_elements(days_long, a_l, e_l, i_l, raan_l, argp_l, M_l, path):
+def plot_orbital_elements(days_long, a_l, e_l, i_l, raan_l, argp_l, M_l, path=None):
     for vals, title in zip(
         [a_l, e_l, i_l, raan_l, argp_l, M_l],
         ["a (m)", "e", "i (deg)", "RAAN (deg)", "ω (deg)", "M (deg)"]
@@ -24,10 +22,11 @@ def plot_orbital_elements(days_long, a_l, e_l, i_l, raan_l, argp_l, M_l, path):
         ax.set_xlabel("Days")
         ax.grid(True, linestyle='--', alpha=0.4)
         plt.tight_layout()
-        savefig(f"{path}/{title}.png")
+        if path is not None:
+            plt.savefig(f"{path}/{title}.png")
 
 
-def plot_earth_frame(chief_eci, dep_eci_exag, snap_idx, colors, labels, EXAG, path):
+def plot_earth_frame(chief_eci, dep_eci_exag, snap_idx, colors, labels, EXAG, path=None):
     fig = plt.figure(figsize=(8, 7))
     ax = fig.add_subplot(111, projection='3d')
     draw_earth(ax)
@@ -55,10 +54,11 @@ def plot_earth_frame(chief_eci, dep_eci_exag, snap_idx, colors, labels, EXAG, pa
     ax.set_box_aspect([1, 1, 1])
     ax.tick_params(labelsize=7)
     fig.tight_layout()
-    savefig(f"{path}/Dep_Offsets.png")
+    if path is not None:
+        plt.savefig(f"{path}/Dep_Offsets.png")
 
 
-def plot_hill_3d(rel_short, colors, labels, path):
+def plot_hill_3d(rel_short, colors, labels, path=None):
     fig = plt.figure(figsize=(8, 7))
     ax = fig.add_subplot(111, projection='3d')
     ax.scatter(0, 0, 0, color='red', s=60, zorder=5, label='Chief')
@@ -76,10 +76,11 @@ def plot_hill_3d(rel_short, colors, labels, path):
     ax.set_box_aspect([1, 1, 1])
     ax.tick_params(labelsize=7)
     fig.tight_layout()
-    savefig(f"{path}/Hill_Traj.png")
+    if path is not None:
+        plt.savefig(f"{path}/Hill_Traj.png")
 
 
-def plot_radial_intrack(rel_short, colors, labels, path):
+def plot_radial_intrack(rel_short, colors, labels, path=None):
     fig, ax = plt.subplots(figsize=(8, 7))
     ax.scatter(0, 0, color='red', s=60, zorder=5, label='Chief')
 
@@ -94,10 +95,11 @@ def plot_radial_intrack(rel_short, colors, labels, path):
     ax.grid(True, linestyle='--', alpha=0.4)
     ax.legend(fontsize=7)
     fig.tight_layout()
-    savefig(f"{path}/Radial_Intrack.png")
+    if path is not None:
+        plt.savefig(f"{path}/Radial_Intrack.png")
 
 
-def plot_intrack_crosstrack(rel_short, colors, labels, path):
+def plot_intrack_crosstrack(rel_short, colors, labels, path=None):
     fig, ax = plt.subplots(figsize=(8, 7))
     ax.scatter(0, 0, color='red', s=60, zorder=5, label='Chief')
 
@@ -112,7 +114,8 @@ def plot_intrack_crosstrack(rel_short, colors, labels, path):
     ax.grid(True, linestyle='--', alpha=0.4)
     ax.legend(fontsize=7)
     fig.tight_layout()
-    savefig(f"{path}/Intrack_Crosstrack.png")
+    if path is not None:
+        plt.savefig(f"{path}/Intrack_Crosstrack.png")
 
 def plot_mean_separation_with_exits(times_s, rel_list, labels, colors, box_side_km, title="", save_path=None):
     days = np.asarray(times_s) / 86400.0
