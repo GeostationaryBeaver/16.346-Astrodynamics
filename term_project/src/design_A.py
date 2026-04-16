@@ -20,7 +20,7 @@ path = THIS_DIR.parent / "figs" / "ideal_force_model" / "j2_resistant" / "design
 
 
 # ------------------------------------
-# 1. SETUP
+# SETUP
 # ------------------------------------
 utc = TimeScalesFactory.getUTC()
 initial_date = AbsoluteDate(2026, 1, 1, 6, 0, 0.0, utc)
