@@ -9,8 +9,6 @@ if not os.path.exists("orekit-data.zip"):
 setup_orekit_curdir()
 
 import numpy as np
-import scipy as sp
-
 from scipy.optimize import newton
 
 from mpl_toolkits.mplot3d import Axes3D  # noqa: F401
@@ -30,24 +28,6 @@ from org.orekit.forces.gravity import HolmesFeatherstoneAttractionModel
 from org.orekit.forces.gravity.potential import GravityFieldFactory
 from org.hipparchus.ode.nonstiff import DormandPrince853Integrator
 
-
-def create_propagator(initial_orbit, forces):
-    min_step = 0.1
-    max_step = 300.0
-
-    # State is 7D in numerical propagator (x,y,z,vx,vy,vz,mass)
-    abs_tol = [10.0] * 7
-    rel_tol = [1e-9] * 7
-
-    integrator = DormandPrince853Integrator(min_step, max_step, abs_tol, rel_tol)
-    propagator = NumericalPropagator(integrator)
-    propagator.setOrbitType(OrbitType.CARTESIAN)
-
-    initial_state = SpacecraftState(initial_orbit)
-    propagator.setInitialState(initial_state)
-    for force in forces:
-        propagator.addForceModel(force)
-    return propagator
 
 
 def create_dsst_propagator(initial_orbit, forces):
@@ -264,74 +244,6 @@ def apply_ROE(chief_orbit, roe):
 # ------------------------------------
 # 6. PROPAGATION HELPER
 # ------------------------------------
-def run_propagation(times, init_date, forces, chief_orbit, deputy_orbits):
-    chief_prop = create_propagator(chief_orbit, forces)
-    dep_props = [create_propagator(o, forces) for o in deputy_orbits]
-
-    a_v, e_v, i_v, raan_v, argp_v, M_v, alt_v = [], [], [], [], [], [], []
-    rel = [[] for _ in deputy_orbits]
-    dist = [[] for _ in deputy_orbits]
-
-    eci = FramesFactory.getEME2000()
-    itrf = FramesFactory.getITRF(IERSConventions.IERS_2010, True)
-
-    for t in times:
-        date_t = init_date.shiftedBy(float(t))
-
-        # Chief
-        chief_state = chief_prop.propagate(date_t)
-        chief_kep = to_keplerian(chief_state.getOrbit())
-
-        pv_c = chief_state.getPVCoordinates(eci)
-        p_c = pv_c.getPosition()
-        v_c = pv_c.getVelocity()
-
-        a_v.append(chief_kep.getA())
-        e_v.append(chief_kep.getE())
-        i_v.append(np.degrees(chief_kep.getI()))
-        raan_v.append(np.degrees(chief_kep.getRightAscensionOfAscendingNode()))
-        argp_v.append(np.degrees(chief_kep.getPerigeeArgument()))
-        M_v.append(np.degrees(chief_kep.getMeanAnomaly()) % 360)
-
-        tr = eci.getTransformTo(itrf, date_t)
-        p_itrf = tr.transformPVCoordinates(PVCoordinates(p_c, Vector3D.ZERO)).getPosition()
-        alt_v.append(p_itrf.getNorm() - Constants.WGS84_EARTH_EQUATORIAL_RADIUS)
-        alt_v.append(p_itrf.getNorm() - Constants.WGS84_EARTH_EQUATORIAL_RADIUS)
-
-        # LVLH basis
-        r_vec = np.array([p_c.getX(), p_c.getY(), p_c.getZ()])
-        v_vec = np.array([v_c.getX(), v_c.getY(), v_c.getZ()])
-        r_hat = r_vec / np.linalg.norm(r_vec)
-        h_vec = np.cross(r_vec, v_vec)
-        h_hat = h_vec / np.linalg.norm(h_vec)
-        t_hat = np.cross(h_hat, r_hat)
-
-        # Deputies
-        for k in range(len(deputy_orbits)):
-            dep_state = dep_props[k].propagate(date_t)
-            pv_d = dep_state.getPVCoordinates(eci)
-            p_d = pv_d.getPosition()
-
-            dr = np.array([
-                p_d.getX() - p_c.getX(),
-                p_d.getY() - p_c.getY(),
-                p_d.getZ() - p_c.getZ()
-            ])
-
-            rel[k].append([
-                float(np.dot(dr, r_hat)),
-                float(np.dot(dr, t_hat)),
-                float(np.dot(dr, h_hat))
-            ])
-            dist[k].append(float(np.linalg.norm(dr)))
-
-    return (
-        a_v, e_v, i_v, raan_v, argp_v, M_v, alt_v,
-        [np.array(rel[k]) for k in range(len(deputy_orbits))],
-        [np.array(dist[k]) for k in range(len(deputy_orbits))]
-    )
-
-
 def get_eci_trajectories(times, init_date, chief_orbit, deputy_orbits):
     chief_prop = create_propagator(chief_orbit)
     dep_props = [create_propagator(o) for o in deputy_orbits]

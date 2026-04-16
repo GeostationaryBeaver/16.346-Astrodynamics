@@ -9,7 +9,7 @@ from propagate import Constants, IERSConventions
 from propagate import HolmesFeatherstoneAttractionModel
 from propagate import GravityFieldFactory
 from propagate import KeplerianOrbit, PositionAngleType, init_close_helix_deputies
-from propagate import run_propagation, apply_ROE, run_propagation_dsst
+from propagate import apply_ROE, run_propagation_dsst
 from propagate import CelestialBodyFactory, get_i
 
 from propagate import DSSTZonal
