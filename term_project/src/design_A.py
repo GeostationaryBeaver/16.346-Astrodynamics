@@ -74,8 +74,8 @@ deputy_orbits = [apply_ROE(chief_orbit, r) for r in deputy_roes]
 
 #Time Arrays
 T_orb = 2 * np.pi * float(np.sqrt((7000e3)**3 / mu))
-# T_span = 1 * T_orb
-T_span = 6 * 30 * 24 * 3600
+T_span = 5 * T_orb
+# T_span = 6 * 30 * 24 * 3600
 N = 1500
 times = np.linspace(0, T_span, N)
 
@@ -94,10 +94,12 @@ colors = ["steelblue", "tomato"]
 labels = ["Deputy 1", "Deputy 2"]
 
 #OG plotting
-plotting.plot_orbital_elements(days, a, e, i, raan, argp, M, path)
-plotting.plot_hill_3d(rel, colors, labels, path)
-plotting.plot_radial_intrack(rel, colors, labels, path)
-plotting.plot_intrack_crosstrack(rel, colors, labels, path)
-plotting.plot_mean_separation_with_exits(times, rel, labels, colors, side_km, max_dist, "", path)
+# plotting.plot_orbital_elements(days, a, e, i, raan, argp, M, path)
+# plotting.plot_hill_3d(rel, colors, labels, path)
+# plotting.plot_radial_intrack(rel, colors, labels, path)
+# plotting.plot_intrack_crosstrack(rel, colors, labels, path)
+# plotting.plot_mean_separation_with_exits(times, rel, labels, colors, side_km, max_dist, "", path)
+
+plotting.plot_hill_3d(rel, colors, labels)
 
 plt.show()
