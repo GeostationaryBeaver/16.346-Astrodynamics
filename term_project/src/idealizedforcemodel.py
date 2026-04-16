@@ -8,7 +8,7 @@ from propagate import FramesFactory
 from propagate import Constants, IERSConventions
 from propagate import HolmesFeatherstoneAttractionModel
 from propagate import GravityFieldFactory
-from propagate import KeplerianOrbit, PositionAngleType, make_along_track_deputies
+from propagate import KeplerianOrbit, PositionAngleType, init_along_track_deputies
 from propagate import run_propagation, get_eci_trajectories, apply_ROE
 
 
@@ -66,7 +66,7 @@ rho = 1.2e-4   # ~840 m amplitude (a * rho)
 
 #initialize deputies on the same track as the chief
 init_sep = 2000 #(m)
-deputy_roes = make_along_track_deputies(chief_orbit, init_sep)
+deputy_roes = init_along_track_deputies(chief_orbit, init_sep)
 
 labels = [
     "Deputy 1",

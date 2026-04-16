@@ -66,7 +66,7 @@ def plot_hill_3d(rel_short, colors, labels, path=None):
     for k, arr in enumerate(rel_short):
         ax.plot(arr[:, 0]/1e3, arr[:, 1]/1e3, arr[:, 2]/1e3,
                 color=colors[k], linewidth=0.9, alpha=0.85, label=labels[k])
-        #ax.scatter(*arr[0]/1e3, color=colors[k], s=30, zorder=5)
+        ax.scatter(*arr[0]/1e3, color=colors[k], s=30, zorder=5)
 
     ax.set_xlabel('Radial (km)', fontsize=8)
     ax.set_ylabel('In-track (km)', fontsize=8)
@@ -86,7 +86,7 @@ def plot_radial_intrack(rel_short, colors, labels, path=None):
 
     for k, arr in enumerate(rel_short):
         ax.plot(arr[:, 0]/1e3, arr[:, 1]/1e3, color=colors[k], linewidth=1.0, label=labels[k])
-        #ax.scatter(arr[0, 0]/1e3, arr[0, 1]/1e3, color=colors[k], s=30, zorder=5)
+        ax.scatter(arr[0, 0]/1e3, arr[0, 1]/1e3, color=colors[k], s=30, zorder=5)
 
     ax.set_xlabel('Radial (km)')
     ax.set_ylabel('In-track (km)')
@@ -105,7 +105,7 @@ def plot_intrack_crosstrack(rel_short, colors, labels, path=None):
 
     for k, arr in enumerate(rel_short):
         ax.plot(arr[:, 1]/1e3, arr[:, 2]/1e3, color=colors[k], linewidth=1.0, label=labels[k])
-        #ax.scatter(arr[0, 1]/1e3, arr[0, 2]/1e3, color=colors[k], s=30, zorder=5)
+        ax.scatter(arr[0, 1]/1e3, arr[0, 2]/1e3, color=colors[k], s=30, zorder=5)
 
     ax.set_xlabel('In-track (km)')
     ax.set_ylabel('Cross-track (km)')
@@ -117,12 +117,14 @@ def plot_intrack_crosstrack(rel_short, colors, labels, path=None):
     if path is not None:
         plt.savefig(f"{path}/Intrack_Crosstrack.png")
 
-def plot_mean_separation_with_exits(times_s, rel_list, labels, colors, box_side_km, title="", save_path=None):
+def plot_mean_separation_with_exits(times_s, rel_list, labels, colors, box_side_km, max_dist,title="", save_path=None):
     days = np.asarray(times_s) / 86400.0
 
     dep_sep_km = [np.linalg.norm(r, axis=1) / 1000.0 for r in rel_list]
 
     fig, ax = plt.subplots(figsize=(10, 5))
+
+    ax.axhline(y=max_dist, color = "grey", linestyle="--")
     for k, d in enumerate(dep_sep_km):
         ax.plot(days, d, color=colors[k], label=f"{labels[k]}-Chief")
 
@@ -133,6 +135,9 @@ def plot_mean_separation_with_exits(times_s, rel_list, labels, colors, box_side_
             L = np.array(box_side_km) * 1000.0
         half = 0.5 * L
         outside = np.any(np.abs(rel_list[k]) > half, axis=1)
+        # # Temporary debug check: is the TOTAL distance > 5km?
+        # dist = np.linalg.norm(rel_list[k], axis=1)
+        # outside = dist > 5000.0
         if np.any(outside):
             idx = int(np.argmax(outside))
             x = days[idx]
