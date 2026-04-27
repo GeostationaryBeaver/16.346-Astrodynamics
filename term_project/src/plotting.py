@@ -153,3 +153,95 @@ def plot_mean_separation_with_exits(times_s, rel_list, labels, colors, box_side_
     if save_path is not None:
         fig.savefig(f"{save_path}/separations.png", dpi=200, bbox_inches="tight")
     return fig, ax
+
+def plot_solar_power(times_s, power_dict, colors, labels, path=None):
+    """
+    Plot instantaneous solar-panel power for the chief and all deputies.
+
+    Produces two subplots stacked vertically:
+      - **Top**: Individual power traces for every spacecraft vs. time.
+        Eclipse entry is visible as a sharp drop to 0 W.
+      - **Bottom**: Total fleet power (sum of all spacecraft) vs. time,
+        giving a system-level view of the orbital data center's power budget.
+
+    Parameters
+    ----------
+    times_s : array-like of float
+        Time stamps [s] from epoch.  Converted to hours internally.
+    power_dict : dict
+        Power history dictionary as returned by ``run_propagation_dsst``::
+
+            {
+                "chief":    np.ndarray shape (N,),   # Watts
+                "deputies": [np.ndarray, ...],       # Watts, per deputy
+            }
+    colors : list of str
+        Matplotlib colour for each deputy trace (len = number of deputies).
+    labels : list of str
+        Legend label for each deputy (len = number of deputies).
+    path : str or Path or None, optional
+        If given, the figure is saved to ``{path}/Solar_Power.png``.
+
+    Returns
+    -------
+    fig : matplotlib.figure.Figure
+    axes : tuple of matplotlib.axes.Axes
+        (ax_individual, ax_total)
+
+    Notes
+    -----
+    - The chief is always plotted in black with the label "Chief".
+    - Time axis is in hours for short propagations and in days for
+      propagations longer than 48 hours (auto-detected).
+    """
+    hours = np.asarray(times_s) / 3600.0
+
+    # auto-select x-axis units
+    if hours[-1] > 48.0:
+        x = np.asarray(times_s) / 86400.0
+        x_label = "Time [days]"
+    else:
+        x = hours
+        x_label = "Time [hours]"
+
+    chief_p = power_dict["chief"]
+    dep_p   = power_dict["deputies"]
+
+    n_sc    = 1 + len(dep_p)
+    total   = chief_p.copy()
+    for dp in dep_p:
+        total += dp
+
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 8), sharex=True)
+
+    # ---- Top panel: individual traces ----
+    ax1.plot(x, chief_p, color="black", linewidth=1.0, label="Chief")
+    for k, dp in enumerate(dep_p):
+        ax1.plot(x, dp, color=colors[k], linewidth=1.0,
+                 label=labels[k], alpha=0.85)
+
+    ax1.set_ylabel("Power [W]")
+    ax1.set_title("Instantaneous Solar-Panel Power per Spacecraft")
+    ax1.legend(fontsize=8, loc="lower right")
+    ax1.grid(True, linestyle="--", alpha=0.4)
+    ax1.set_ylim(bottom=-5)
+
+    # ---- Bottom panel: fleet total ----
+    ax2.plot(x, total, color="darkgreen", linewidth=1.2, label="Fleet Total")
+    ax2.axhline(
+        y=np.mean(total), color="grey", linestyle=":", linewidth=0.8,
+        label=f"Mean = {np.mean(total):.1f} W"
+    )
+    ax2.set_xlabel(x_label)
+    ax2.set_ylabel("Power [W]")
+    ax2.set_title(f"Total Formation Power ({n_sc} spacecraft)")
+    ax2.legend(fontsize=8, loc="lower right")
+    ax2.grid(True, linestyle="--", alpha=0.4)
+    ax2.set_ylim(bottom=-5)
+
+    fig.tight_layout()
+
+    if path is not None:
+        fig.savefig(f"{path}/Solar_Power.png", dpi=200, bbox_inches="tight")
+
+    return fig, (ax1, ax2)

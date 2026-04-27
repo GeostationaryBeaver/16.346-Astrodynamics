@@ -98,5 +98,7 @@ labels = ["Deputy 1", "Deputy 2"]
 # plotting.plot_mean_separation_with_exits(times, rel, labels, colors, side_km, max_dist, "", path)
 
 plotting.plot_hill_3d(rel, colors, labels)
+plotting.plot_radial_intrack(rel, colors, labels)
+plotting.plot_intrack_crosstrack(rel, colors, labels)
 
 plt.show()

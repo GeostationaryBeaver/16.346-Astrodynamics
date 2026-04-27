@@ -29,8 +29,70 @@ from org.orekit.forces.gravity.potential import GravityFieldFactory
 from org.hipparchus.ode.nonstiff import DormandPrince853Integrator
 
 
+# =============================================================================
+# SPACECRAFT PHYSICAL CONSTANTS (ISARA-class 3U CubeSat)
+# =============================================================================
+ISARA_MASS_KG = 4.0               # Spacecraft wet mass [kg]
+ISARA_PANEL_AREA_M2 = 0.3         # Total deployable solar panel area [m²]
+ISARA_CROSS_SECTION_M2 = 0.06     # Drag cross-section (3U long-axis forward) [m²]
+ISARA_SRP_AREA_M2 = 0.3           # SRP effective area (panels facing sun) [m²]
+ISARA_CR = 1.5                    # Radiation pressure coefficient [-]
+ISARA_CD = 2.2                    # Drag coefficient [-]
+SOLAR_CELL_EFFICIENCY = 0.283     # Triple-junction GaAs cell efficiency [-]
+SOLAR_FLUX_W_M2 = 1361.0          # Solar constant at 1 AU [W/m²]
+
+
+def create_earth_body():
+    """
+    Create an Orekit OneAxisEllipsoid representing Earth using WGS84 parameters.
+
+    Returns
+    -------
+    OneAxisEllipsoid
+        Earth body model with equatorial radius and flattening defined by WGS84,
+        attached to the ITRF frame.
+    """
+    itrf = FramesFactory.getITRF(IERSConventions.IERS_2010, True)
+    return OneAxisEllipsoid(
+        Constants.WGS84_EARTH_EQUATORIAL_RADIUS,
+        Constants.WGS84_EARTH_FLATTENING,
+        itrf
+    )
+
 
 def create_dsst_propagator(initial_orbit, forces):
+    """
+    Create and configure a DSST (Double-averaged Semi-analytical) propagator.
+
+    The DSST propagator averages short-period oscillations out of the equations
+    of motion, propagating only the mean orbital elements. This makes it highly
+    efficient for long-duration propagations (days to months) while still
+    capturing secular and long-period perturbation effects.
+
+    The integrator used is Dormand-Prince 8(5,3), a variable-step explicit
+    Runge-Kutta method well suited to the smooth mean-element ODEs.
+
+    Parameters
+    ----------
+    initial_orbit : Orbit
+        The initial orbit in mean-element space. Must be defined at a specific
+        epoch in an inertial frame with an associated gravitational parameter.
+    forces : list
+        List of DSST-compatible force models (e.g., DSSTZonal, DSSTThirdBody,
+        DSSTSolarRadiationPressure, DSSTAtmosphericDrag).
+
+    Returns
+    -------
+    DSSTPropagator
+        Fully configured DSST propagator ready for .propagate() calls.
+
+    Notes
+    -----
+    - The initial state is set explicitly as MEAN elements to prevent the
+      'initial snap' artifact that causes secular drift when osculating
+      elements are mistakenly treated as mean elements.
+    - Tolerance vectors are 7-dimensional (6 orbital elements + mass).
+    """
     # DSST usually works better with slightly larger steps than numerical
     min_step = 1.0
     max_step = 86400.0  # DSST can take massive steps (even a full day!)
@@ -44,7 +106,6 @@ def create_dsst_propagator(initial_orbit, forces):
     # We tell it to propagate the MEAN elements
     propagator = DSSTPropagator(integrator, PropagationType.MEAN)
 
-    # 1. Convert standard gravity provider to DSST Zonal Force (J2, J3, etc.)
     # This is the 'averaged' gravity logic
     # zonal_force = DSSTZonal(gravity_provider)
     # propagator.addForceModel(zonal_force)
@@ -55,7 +116,6 @@ def create_dsst_propagator(initial_orbit, forces):
     for force_model in propagator.getAllForceModels():
         force_model.registerAttitudeProvider(propagator.getAttitudeProvider())
 
-    # 2. Set Initial State
     # CRITICAL: We explicitly tell Orekit the input orbit IS MEAN.
     # This prevents the 'initial snap' that causes drift.
     initial_state = SpacecraftState(initial_orbit)
@@ -65,11 +125,56 @@ def create_dsst_propagator(initial_orbit, forces):
 
 
 def to_keplerian(orbit):
-    """Safely convert any Orekit orbit representation to KeplerianOrbit."""
+    """
+    Convert any Orekit orbit representation to a KeplerianOrbit.
+
+    Orekit internally stores orbits in various representations (Cartesian,
+    equinoctial, circular, Keplerian). This utility ensures we always get
+    classical Keplerian elements for analysis.
+
+    Parameters
+    ----------
+    orbit : Orbit
+        Any Orekit Orbit subclass instance.
+
+    Returns
+    -------
+    KeplerianOrbit
+        The same orbit expressed in classical Keplerian elements
+        (a, e, i, ω, Ω, M or ν).
+    """
     return KeplerianOrbit.cast_(OrbitType.KEPLERIAN.convertType(orbit))
 
 def get_i(a, e):
-    """Initialize inclination appropriate for the chosen a and e parameters"""
+    """
+    Compute the sun-synchronous inclination for a given semi-major axis and eccentricity.
+
+    For a sun-synchronous orbit, the RAAN precession rate must equal Earth's
+    mean motion around the Sun (~0.9856°/day or 2π/year). This function uses
+    Newton's method to solve the implicit relationship:
+
+        0 = Ω̇_SSO + (3/2) * n * J2 * (R_e/p)² * cos(i)
+
+    where Ω̇_SSO = 2π / (365.24219 * 86400) rad/s.
+
+    Parameters
+    ----------
+    a : float
+        Semi-major axis [m].
+    e : float
+        Eccentricity [-].
+
+    Returns
+    -------
+    float
+        Sun-synchronous inclination [rad]. Typically ~97°-99° for LEO.
+
+    Notes
+    -----
+    - Uses the unnormalized J2 coefficient from Orekit's gravity field.
+    - Initial guess of 98° is appropriate for LEO SSO altitudes.
+    - Convergence is typically achieved in 3-5 iterations.
+    """
     provider = GravityFieldFactory.getUnnormalizedProvider(2, 0)
     coeffs = provider.onDate(provider.getReferenceDate())
     J2 = -coeffs.getUnnormalizedCnm(2, 0)
@@ -87,16 +192,334 @@ def get_i(a, e):
     return float(newton(f, np.radians(98.0)))
 
 
+def is_in_sunlight(r_sc_eci, r_sun_eci, R_earth=Constants.WGS84_EARTH_EQUATORIAL_RADIUS):
+    """
+    Determine whether a spacecraft is illuminated by the Sun using a
+    cylindrical shadow model.
+
+    The cylindrical model assumes Earth casts a shadow cylinder of radius
+    R_earth in the anti-sun direction. A spacecraft is eclipsed if:
+      1. It is on the anti-sun side of Earth (negative projection onto sun vector)
+      2. Its perpendicular distance from the Earth-Sun line is less than R_earth
+
+    This is a first-order approximation that neglects:
+      - Penumbra (partial shadow from finite solar disk)
+      - Earth's oblateness
+      - Atmospheric refraction
+
+    Parameters
+    ----------
+    r_sc_eci : np.ndarray, shape (3,)
+        Spacecraft position in ECI frame [m].
+    r_sun_eci : np.ndarray, shape (3,)
+        Sun position in ECI frame [m].
+    R_earth : float, optional
+        Earth's equatorial radius [m]. Default is WGS84 value.
+
+    Returns
+    -------
+    bool
+        True if spacecraft is in sunlight, False if eclipsed.
+    """
+    sun_dir = r_sun_eci / np.linalg.norm(r_sun_eci)
+
+    # Projection of spacecraft position onto sun direction
+    proj = np.dot(r_sc_eci, sun_dir)
+
+    if proj > 0:
+        # Spacecraft is on the sun-side of Earth -> always illuminated
+        return True
+
+    # Spacecraft is behind Earth relative to sun; check shadow cylinder
+    perp_vec = r_sc_eci - proj * sun_dir
+    perp_dist = np.linalg.norm(perp_vec)
+
+    return perp_dist > R_earth
+
+
+def get_sun_position_eci(sun, date_t, eci):
+    """
+    Extract the Sun's position vector in ECI coordinates at a given epoch.
+
+    Parameters
+    ----------
+    sun : CelestialBody
+        Orekit Sun body from ``CelestialBodyFactory.getSun()``.
+    date_t : AbsoluteDate
+        Epoch at which to evaluate the Sun's position.
+    eci : Frame
+        ECI reference frame (typically EME2000).
+
+    Returns
+    -------
+    np.ndarray, shape (3,)
+        Sun position [m] in the ECI frame.
+    """
+    sun_pos = sun.getPVCoordinates(date_t, eci).getPosition()
+    return np.array([sun_pos.getX(), sun_pos.getY(), sun_pos.getZ()])
+
+
+def compute_panel_normal_nadir_pointing(r_sc_eci, v_sc_eci):
+    """
+    Compute the solar-panel outward normal for a nadir-pointing spacecraft.
+
+    For a nadir-pointing CubeSat with body-fixed deployable panels, the panel
+    normal is perpendicular to both the velocity vector and the nadir direction.
+    Specifically, for panels deployed along the orbit-normal (±h-hat) axis —
+    which is standard for dawn-dusk SSO missions to maximise solar exposure —
+    the panel normal points along the orbit-normal direction.
+
+    However, many CubeSat configurations (including ISARA) deploy panels that
+    lie in the orbit plane and rotate with the body.  For a nadir-pointing
+    body, the panel normal is approximated as the **anti-nadir** direction
+    (pointing away from Earth, i.e., +r̂).  This is the "worst case" for a
+    single-axis deployment and gives a realistic cos(θ) variation.
+
+    A more accurate model would track panel gimbal angles or use the body
+    y-axis for side-deployed panels.  Here we use the orbit-normal (+ĥ)
+    convention, which is the most favourable fixed-body orientation in a
+    dawn-dusk SSO (panels face the Sun most of the time).
+
+    Parameters
+    ----------
+    r_sc_eci : np.ndarray, shape (3,)
+        Spacecraft position in ECI [m].
+    v_sc_eci : np.ndarray, shape (3,)
+        Spacecraft velocity in ECI [m/s].
+
+    Returns
+    -------
+    np.ndarray, shape (3,)
+        Unit vector of the panel outward normal in ECI.
+
+    Notes
+    -----
+    In a dawn-dusk SSO the orbit normal is roughly perpendicular to the
+    Sun direction, so panels deployed along ±ĥ receive near-optimal
+    illumination with cos(θ) ≈ 0.7–1.0 through most of the orbit.
+    """
+    h_vec = np.cross(r_sc_eci, v_sc_eci)
+    h_hat = h_vec / np.linalg.norm(h_vec)
+    return h_hat
+
+
+def compute_solar_flux_at_distance(r_sc_eci, r_sun_eci,
+                                   S0=SOLAR_FLUX_W_M2):
+    """
+    Compute solar flux at the spacecraft accounting for Earth-Sun distance variation.
+
+    The solar "constant" S0 = 1361 W/m² is defined at 1 AU.  Earth's orbital
+    eccentricity causes the actual flux to vary from ~1321 W/m² (aphelion,
+    July) to ~1413 W/m² (perihelion, January) — a ±3.3% swing.
+
+    The corrected flux follows the inverse-square law:
+
+        S(r) = S0 · (1 AU / |r_sun - r_sc|)²
+
+    In practice for LEO, |r_sun - r_sc| ≈ |r_sun| since the spacecraft
+    altitude (~630 km) is negligible compared to 1 AU (~1.496 × 10⁸ km).
+
+    Parameters
+    ----------
+    r_sc_eci : np.ndarray, shape (3,)
+        Spacecraft position in ECI [m].
+    r_sun_eci : np.ndarray, shape (3,)
+        Sun position in ECI [m].
+    S0 : float, optional
+        Solar constant at 1 AU [W/m²]. Default: 1361.0.
+
+    Returns
+    -------
+    float
+        Solar flux at spacecraft distance [W/m²].
+    """
+    AU_m = 1.496e11  # 1 AU in metres
+    # Vector from spacecraft to Sun
+    r_to_sun = r_sun_eci - r_sc_eci
+    dist = np.linalg.norm(r_to_sun)
+    return S0 * (AU_m / dist) ** 2
+
+
+def compute_solar_power(r_sc_eci, r_sun_eci,
+                        v_sc_eci=None,
+                        panel_area=ISARA_PANEL_AREA_M2,
+                        efficiency=SOLAR_CELL_EFFICIENCY,
+                        solar_flux=SOLAR_FLUX_W_M2):
+    """
+    Compute instantaneous electrical power from solar panels on a nadir-pointing
+    spacecraft, including eclipse, sun-incidence angle, and distance corrections.
+
+    The power model is:
+
+        P = η · A · S(r) · max(cos θ, 0)     if in sunlight
+        P = 0                                  if eclipsed
+
+    where:
+        η     = solar cell conversion efficiency
+        A     = total panel area
+        S(r)  = solar flux corrected for Earth–Sun distance (1/r² from 1 AU)
+        θ     = angle between panel outward normal and spacecraft-to-Sun vector
+
+    The cos(θ) term is the key physical addition.  For a nadir-pointing
+    CubeSat in a dawn-dusk SSO with panels deployed along the orbit normal,
+    θ varies as the spacecraft orbits:
+
+      - Near the terminator crossing (ascending/descending node): θ ≈ 0°,
+        cos θ ≈ 1 → maximum power.
+      - Over the poles: θ increases, cos θ drops → reduced power.
+      - The variation is quasi-sinusoidal with orbital period (~97 min).
+
+    Crucially, because the three formation spacecraft are at slightly different
+    orbital positions (different true anomaly, RAAN, inclination), their θ
+    values differ at each time step, producing distinguishable power traces.
+
+    Parameters
+    ----------
+    r_sc_eci : np.ndarray, shape (3,)
+        Spacecraft position in ECI [m].
+    r_sun_eci : np.ndarray, shape (3,)
+        Sun position in ECI [m].
+    v_sc_eci : np.ndarray or None, optional
+        Spacecraft velocity in ECI [m/s].  Required for panel-normal
+        computation.  If None, falls back to the old binary (on/off)
+        model with ideal sun-pointing (backward compatible).
+    panel_area : float, optional
+        Total solar panel area [m²]. Default: ISARA 0.3 m².
+    efficiency : float, optional
+        Solar cell conversion efficiency [-]. Default: 0.283.
+    solar_flux : float, optional
+        Solar constant at 1 AU [W/m²]. Default: 1361.0.
+        Only used as fallback when v_sc_eci is None.
+
+    Returns
+    -------
+    float
+        Instantaneous electrical power [W]. Zero during eclipse.
+    """
+    # ── Eclipse check (cylindrical shadow) ──
+    if not is_in_sunlight(r_sc_eci, r_sun_eci):
+        return 0.0
+
+    # ── If velocity not provided, fall back to simple binary model ──
+    if v_sc_eci is None:
+        return efficiency * panel_area * solar_flux
+
+    # ── Distance-corrected solar flux ──
+    S = compute_solar_flux_at_distance(r_sc_eci, r_sun_eci, S0=solar_flux)
+
+    # ── Panel normal (orbit-normal for nadir-pointing SC with h-hat panels) ──
+    n_hat = compute_panel_normal_nadir_pointing(r_sc_eci, v_sc_eci)
+
+    # ── Sun direction from spacecraft ──
+    to_sun = r_sun_eci - r_sc_eci
+    sun_hat = to_sun / np.linalg.norm(to_sun)
+
+    # ── Cosine of incidence angle ──
+    cos_theta = np.dot(n_hat, sun_hat)
+
+    # Panels can be illuminated from either side in some configurations,
+    # but we assume single-sided panels: only the outward face generates power.
+    # If cos_theta < 0 the Sun is behind the panel → use |cos_theta| if
+    # panels are double-sided, or take max(cos_theta, 0) for single-sided.
+    # For orbit-normal panels the Sun can be on either side of the orbit
+    # plane, so we use abs() to capture both halves of the orbit.
+    cos_incidence = abs(cos_theta)
+
+    return efficiency * panel_area * S * cos_incidence
+
+'''
+def compute_solar_power(r_sc_eci, r_sun_eci,
+                        panel_area=ISARA_PANEL_AREA_M2,
+                        efficiency=SOLAR_CELL_EFFICIENCY,
+                        solar_flux=SOLAR_FLUX_W_M2):
+    """
+    Compute instantaneous electrical power generated by sun-tracking solar panels.
+
+    Assumes ideal sun-pointing (panel normal always faces the Sun when illuminated).
+    This is appropriate for deployable panels with ADCS-driven sun tracking, which
+    is standard for power-critical missions like orbital data centers.
+
+    The power model is:
+        P = η * A * S    (if in sunlight)
+        P = 0            (if eclipsed)
+
+    where η is cell efficiency, A is panel area, and S is solar flux.
+
+    Parameters
+    ----------
+    r_sc_eci : np.ndarray, shape (3,)
+        Spacecraft position in ECI [m].
+    r_sun_eci : np.ndarray, shape (3,)
+        Sun position in ECI [m].
+    panel_area : float, optional
+        Total solar panel area [m²]. Default: ISARA 0.3 m².
+    efficiency : float, optional
+        Solar cell conversion efficiency [-]. Default: 0.283 (triple-junction GaAs).
+    solar_flux : float, optional
+        Solar irradiance at 1 AU [W/m²]. Default: 1361 W/m².
+
+    Returns
+    -------
+    float
+        Instantaneous electrical power [W]. Zero during eclipse.
+
+    Notes
+    -----
+    Maximum theoretical power for ISARA-class panels:
+        P_max = 0.283 * 0.3 * 1361 ≈ 115.5 W
+
+    In a dawn-dusk SSO, eclipse fraction is minimal (<5% per orbit),
+    so near-continuous power generation is expected.
+    """
+    if is_in_sunlight(r_sc_eci, r_sun_eci):
+        return efficiency * panel_area * solar_flux
+    else:
+        return 0.0
+'''    
+
 def init_string_of_pearls(
     chief_orbit,
     separation_m: float = 1000.0,
     osc_fraction: float = 0.1,
 ) -> list:
     """
-    Place two deputies along the along-track axis at ±separation_m from
-    the chief at epoch, with small controlled oscillation amplitudes. Is intended
-    to be used when initializing deputies for design B as the constraints are
-    looser.
+    Initialize two deputies in a 'string of pearls' (along-track) formation.
+
+    Deputies are placed symmetrically ahead of and behind the chief in the
+    along-track direction. Small eccentricity and inclination offsets are
+    added to create bounded oscillatory motion that prevents collision while
+    maintaining the along-track separation.
+
+    The ROE initialization enforces:
+      - R₀ = 0: Zero initial radial offset (via eccentricity vector phasing)
+      - N₀ = 0: Zero initial cross-track offset (via inclination vector phasing)
+      - T₀ = ±separation_m: Symmetric along-track placement
+
+    Parameters
+    ----------
+    chief_orbit : KeplerianOrbit
+        Reference orbit of the chief spacecraft.
+    separation_m : float, optional
+        Desired along-track separation from chief [m]. Default: 1000 m.
+        Each deputy is placed at +separation_m and -separation_m.
+    osc_fraction : float, optional
+        Fraction of separation used as oscillation amplitude [-]. Default: 0.1.
+        Controls the 'breathing' of the formation to avoid rectilinear drift.
+
+    Returns
+    -------
+    list of dict
+        Two ROE dictionaries (one per deputy), each containing:
+        {'da', 'dl', 'dex', 'dey', 'dix', 'diy'}.
+
+    Notes
+    -----
+    This configuration is inherently J2-robust because:
+    - da = 0 prevents differential mean motion (no along-track drift)
+    - The symmetric placement naturally satisfies δ(Ṁ + ω̇) ≈ 0
+    - Small de/di ensure the formation stays bounded
+
+    Best suited for Design B where 2-5 km separations are acceptable.
     """
     a  = float(chief_orbit.getA())
     u0 = (float(chief_orbit.getPerigeeArgument())
@@ -145,14 +568,26 @@ def init_close_helix_deputies(
         mean_dist_m: float = 0.0
 ) -> list:
     """
-    Initializes deputies in a 'Helix' formation with passive safety
-    via parallel e/i-vector separation.
+    Initialize two deputies in a 'helix' formation with passive safety.
+
+    The helix formation places deputies on opposite sides of a relative
+    motion ellipse that wraps around the chief. Passive safety is achieved
+    by enforcing parallel eccentricity/inclination vector separation
+    (Spurmann & D'Amico, 2011), ensuring the deputies never cross through
+    the chief's position even without active control.
+
+    The geometry produces:
+      - Radial oscillation amplitude: a * δe (= helix_radius_m)
+      - Cross-track oscillation amplitude: a * δi (= 2 * helix_radius_m)
+      - The 2:1 scaling creates a quasi-circular cross-section in the
+        radial-crosstrack plane
 
     Parameters
     ----------
-    chief_orbit  : KeplerianOrbit
-    helix_radius_m : The 'radius' of the relative motion ellipse (m).
-                     Determines cross-track and radial swing.
+    chief_orbit : KeplerianOrbit
+        Reference orbit of the chief spacecraft.
+    helix_radius_m : float, optional
+        Radial swing amplitude of the relative motion [m]
     mean_dist_m    : Mean along-track offset from chief (m).
                      Set to 0 to circle exactly around the chief.
     """
@@ -197,6 +632,7 @@ def init_close_helix_deputies(
         ))
 
     return roes
+
 
 def apply_ROE(chief_orbit, roe):
     """
@@ -269,7 +705,7 @@ def get_eci_trajectories(times, init_date, chief_orbit, deputy_orbits):
     dep_pts = [np.array(arr) for arr in dep_pts]
     return chief_pts, dep_pts
 
-
+'''
 def run_propagation_dsst(times, init_date, forces, chief_orbit, deputy_orbits):
     chief_prop = create_dsst_propagator(chief_orbit, forces)
     dep_props = [create_dsst_propagator(o, forces) for o in deputy_orbits]
@@ -336,3 +772,166 @@ def run_propagation_dsst(times, init_date, forces, chief_orbit, deputy_orbits):
         [np.array(rel[k]) for k in range(len(deputy_orbits))],
         [np.array(dist[k]) for k in range(len(deputy_orbits))]
     )
+'''
+    
+
+def run_propagation_dsst(times, init_date, forces, chief_orbit, deputy_orbits,
+                         sun=None):
+    """
+    Propagate a chief + N deputies using DSST and collect time histories.
+
+    At each output time step this function:
+      1. Propagates the chief and every deputy to the current epoch.
+      2. Extracts the chief's mean Keplerian elements.
+      3. Builds a radial / in-track / cross-track (LVLH) frame centred on
+         the chief and projects each deputy's relative position into it.
+      4. (Optional) If a ``sun`` CelestialBody is provided, evaluates the
+         cylindrical-shadow eclipse model, computes the sun-incidence angle
+         on orbit-normal-deployed panels, applies the 1/r² flux correction,
+         and records instantaneous solar power for every spacecraft.
+
+    The LVLH basis vectors are constructed as:
+      - r̂  = r / |r|                        (radial, away from Earth)
+      - ĥ  = (r × v) / |r × v|             (orbit-normal)
+      - t̂  = ĥ × r̂                         (along-track / in-track, ~velocity)
+
+    Parameters
+    ----------
+    times : array-like of float
+        Output time stamps measured from ``init_date`` [s].
+    init_date : AbsoluteDate
+        Orekit epoch corresponding to times[0] = 0.
+    forces : list
+        DSST-compatible force models passed to ``create_dsst_propagator``.
+    chief_orbit : KeplerianOrbit
+        Chief's initial mean-element orbit.
+    deputy_orbits : list of KeplerianOrbit
+        Each deputy's initial mean-element orbit.
+    sun : CelestialBody or None, optional
+        Orekit Sun body (from ``CelestialBodyFactory.getSun()``).  When
+        provided, the function tracks eclipse state and solar-panel power
+        for every spacecraft at every time step.  Default: None (no power
+        tracking).
+
+    Returns
+    -------
+    tuple of length 10
+        ``(a, e, i, raan, argp, M, alt, rel, dist, power)``
+
+        - **a** : list of float — chief semi-major axis [m]
+        - **e** : list of float — chief eccentricity [-]
+        - **i, raan, argp, M** : list of float — chief angles [deg]
+        - **alt** : list of float — chief geodetic altitude [m]
+        - **rel** : list of np.ndarray, shape (N, 3) — deputy LVLH
+          positions [m] (radial, in-track, cross-track)
+        - **dist** : list of np.ndarray, shape (N,) — deputy-chief
+          Euclidean distances [m]
+        - **power** : dict or None — If ``sun`` was provided::
+
+              {
+                  "chief":    np.ndarray shape (N,),  # [W]
+                  "deputies": [np.ndarray, ...],      # [W] per deputy
+              }
+
+            If ``sun`` was ``None``, returns ``None``.
+    """
+    # ------------------------------------------------------------------ setup
+    chief_prop = create_dsst_propagator(chief_orbit, forces)
+    dep_props = [create_dsst_propagator(o, forces) for o in deputy_orbits]
+
+    eci  = FramesFactory.getEME2000()
+    itrf = FramesFactory.getITRF(IERSConventions.IERS_2010, True)
+
+    a_v, e_v, i_v, raan_v, argp_v, M_v, alt_v = [], [], [], [], [], [], []
+    rel  = [[] for _ in deputy_orbits]
+    dist = [[] for _ in deputy_orbits]
+
+    track_power = sun is not None
+    if track_power:
+        chief_power = []
+        dep_power   = [[] for _ in deputy_orbits]
+
+    # --------------------------------------------------------------- main loop
+    for t in times:
+        date_t = init_date.shiftedBy(float(t))
+
+        # ── Chief state ──
+        chief_state = chief_prop.propagate(date_t)
+        chief_kep   = to_keplerian(chief_state.getOrbit())
+
+        pv_c = chief_state.getPVCoordinates(eci)
+        p_c  = pv_c.getPosition()
+        v_c  = pv_c.getVelocity()
+
+        a_v.append(chief_kep.getA())
+        e_v.append(chief_kep.getE())
+        i_v.append(np.degrees(chief_kep.getI()))
+        raan_v.append(np.degrees(
+            chief_kep.getRightAscensionOfAscendingNode()))
+        argp_v.append(np.degrees(chief_kep.getPerigeeArgument()))
+        M_v.append(np.degrees(chief_kep.getMeanAnomaly()) % 360)
+
+        # Geodetic altitude
+        tr     = eci.getTransformTo(itrf, date_t)
+        p_itrf = tr.transformPVCoordinates(
+            PVCoordinates(p_c, Vector3D.ZERO)).getPosition()
+        alt_v.append(
+            p_itrf.getNorm() - Constants.WGS84_EARTH_EQUATORIAL_RADIUS)
+
+        # ── LVLH basis ──
+        r_vec = np.array([p_c.getX(), p_c.getY(), p_c.getZ()])
+        v_vec = np.array([v_c.getX(), v_c.getY(), v_c.getZ()])
+        r_hat = r_vec / np.linalg.norm(r_vec)
+        h_vec = np.cross(r_vec, v_vec)
+        h_hat = h_vec / np.linalg.norm(h_vec)
+        t_hat = np.cross(h_hat, r_hat)
+
+        # ── Sun vector (once per time step) ──
+        if track_power:
+            r_sun = get_sun_position_eci(sun, date_t, eci)
+            # Chief power — pass velocity for incidence angle computation
+            chief_power.append(
+                compute_solar_power(r_vec, r_sun, v_sc_eci=v_vec)
+            )
+
+        # ── Deputies ──
+        for k in range(len(deputy_orbits)):
+            dep_state = dep_props[k].propagate(date_t)
+            pv_d      = dep_state.getPVCoordinates(eci)
+            p_d       = pv_d.getPosition()
+            v_d       = pv_d.getVelocity()
+
+            dr = np.array([
+                p_d.getX() - p_c.getX(),
+                p_d.getY() - p_c.getY(),
+                p_d.getZ() - p_c.getZ()
+            ])
+
+            rel[k].append([
+                float(np.dot(dr, r_hat)),
+                float(np.dot(dr, t_hat)),
+                float(np.dot(dr, h_hat))
+            ])
+            dist[k].append(float(np.linalg.norm(dr)))
+
+            if track_power:
+                r_dep = r_vec + dr
+                v_dep = np.array([v_d.getX(), v_d.getY(), v_d.getZ()])
+                dep_power[k].append(
+                    compute_solar_power(r_dep, r_sun, v_sc_eci=v_dep)
+                )
+
+    # -------------------------------------------------------------- package
+    rel  = [np.array(rel[k])  for k in range(len(deputy_orbits))]
+    dist = [np.array(dist[k]) for k in range(len(deputy_orbits))]
+
+    if track_power:
+        power = {
+            "chief":    np.array(chief_power),
+            "deputies": [np.array(dep_power[k])
+                         for k in range(len(deputy_orbits))]
+        }
+    else:
+        power = None
+
+    return (a_v, e_v, i_v, raan_v, argp_v, M_v, alt_v, rel, dist, power)
