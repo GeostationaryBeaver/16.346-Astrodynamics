@@ -3,10 +3,13 @@ orekit.initVM()
 import os
 from orekit.pyhelpers import setup_orekit_curdir, download_orekit_data_curdir
 
-if not os.path.exists("orekit-data.zip"):
-    download_orekit_data_curdir()
+print("this is a test")
 
-setup_orekit_curdir()
+if not os.path.exists("term_project/src/orekit-data.zip"):
+    raise TypeError
+    #download_orekit_data_curdir()
+
+setup_orekit_curdir("term_project/src/orekit-data.zip")
 
 import numpy as np
 from scipy.optimize import newton
@@ -58,6 +61,151 @@ def create_earth_body():
         Constants.WGS84_EARTH_FLATTENING,
         itrf
     )
+
+
+def build_full_force_model(gravity_degree=12, gravity_order=12,
+                           include_srp=True, include_drag=True,
+                           include_third_body=True,
+                           cross_section=ISARA_CROSS_SECTION_M2,
+                           srp_area=ISARA_SRP_AREA_M2,
+                           Cr=ISARA_CR, Cd=ISARA_CD,
+                           mass_kg=ISARA_MASS_KG):
+    """
+    Build a comprehensive list of DSST-compatible force models for high-fidelity propagation.
+
+    This function assembles a realistic perturbation environment for LEO formation
+    flying, including:
+
+    1. **Zonal harmonics** (J2, J3, ... Jn): Axially symmetric gravitational
+       perturbations from Earth's oblateness. These produce secular drift in Ω,
+       ω, and M. For SSO, J2 is the dominant perturbation.
+
+    2. **Tesseral harmonics**: Non-axially-symmetric gravitational perturbations
+       (longitude-dependent). These cause short-period and resonant effects,
+       particularly near repeat-groundtrack orbits. Included up to the specified
+       degree and order.
+
+    3. **Solar Radiation Pressure (SRP)**: Photon momentum transfer from sunlight.
+       Uses a cannonball (isotropic) model with a single reflectivity coefficient Cr.
+       The DSST implementation includes Earth shadow transitions. At 630 km altitude,
+       SRP acceleration is ~10⁻⁸ m/s², small but non-negligible over months.
+
+    4. **Atmospheric Drag**: Aerodynamic force from residual atmosphere. Uses the
+       Harris-Priester density model, which is a static empirical model providing
+       density as a function of altitude, latitude, and solar activity via the
+       diurnal bulge direction. At 630 km, drag is weak (~10⁻⁹ m/s²) but causes
+       irreversible semi-major axis decay.
+
+    5. **Third-body perturbations**: Gravitational attraction from the Sun and Moon.
+       These cause long-period oscillations in eccentricity and inclination.
+       Solar third-body effects also couple with the SSO constraint since the
+       orbit plane is deliberately oriented relative to the Sun.
+
+    Parameters
+    ----------
+    gravity_degree : int, optional
+        Maximum degree of spherical harmonic expansion. Default: 12.
+        Degree 12 captures all significant spatial variations for LEO.
+    gravity_order : int, optional
+        Maximum order of spherical harmonic expansion. Default: 12.
+        Order = degree gives the full field at that resolution.
+    include_srp : bool, optional
+        Whether to include solar radiation pressure. Default: True.
+    include_drag : bool, optional
+        Whether to include atmospheric drag. Default: True.
+    include_third_body : bool, optional
+        Whether to include Sun and Moon third-body gravity. Default: True.
+    cross_section : float, optional
+        Spacecraft drag cross-sectional area [m²]. Default: ISARA 0.06 m².
+    srp_area : float, optional
+        Spacecraft area exposed to solar radiation [m²]. Default: ISARA 0.3 m².
+    Cr : float, optional
+        Radiation pressure coefficient [-]. Default: 1.5.
+        (1.0 = perfect absorption, 2.0 = perfect specular reflection)
+    Cd : float, optional
+        Aerodynamic drag coefficient [-]. Default: 2.2.
+        (standard for LEO CubeSats in free molecular flow)
+    mass_kg : float, optional
+        Spacecraft mass [kg]. Default: 4.0 (ISARA wet mass).
+
+    Returns
+    -------
+    list
+        List of DSST force model objects ready to pass to ``create_dsst_propagator``.
+
+    Notes
+    -----
+    - The gravity field data comes from Orekit's bundled EGM model (loaded via
+      ``GravityFieldFactory``). Both unnormalized (for zonal) and normalized
+      (for tesseral) providers are created from the same underlying model.
+    - The Harris-Priester atmosphere model requires a ``OneAxisEllipsoid`` for
+      Earth and the Sun body for diurnal bulge orientation.
+    - The DSST tesseral force requires Earth's body frame and rotation rate
+      for proper resonance handling.
+    """
+    forces = []
+
+    # --- 1. Zonal harmonics (axisymmetric gravity) ---
+    # Uses unnormalized coefficients as required by DSSTZonal
+    zonal_provider = GravityFieldFactory.getUnnormalizedProvider(gravity_degree, 0)
+    forces.append(DSSTZonal(zonal_provider))
+
+    # --- 2. Tesseral harmonics (longitude-dependent gravity) ---
+    if gravity_order > 0:
+        # DSSTTesseral needs normalized coefficients and Earth's body frame
+        tesseral_provider = GravityFieldFactory.getNormalizedProvider(
+            gravity_degree, gravity_order
+        )
+        itrf = FramesFactory.getITRF(IERSConventions.IERS_2010, True)
+        eci = FramesFactory.getEME2000()
+        # Earth's rotation rate [rad/s] — needed for resonance identification
+        earth_rot = Constants.WGS84_EARTH_ANGULAR_VELOCITY
+        forces.append(
+            DSSTTesseral(itrf, earth_rot, tesseral_provider)
+        )
+
+    # --- 3. Solar Radiation Pressure ---
+    if include_srp:
+        sun = CelestialBodyFactory.getSun()
+        earth = create_earth_body()
+        # Isotropic (cannonball) radiation model: force depends on Cr, area, mass
+        radiation_sc = IsotropicRadiationSingleCoefficient(
+            float(srp_area), float(Cr)
+        )
+        # DSST SRP uses the averaged force including shadow entry/exit
+        # Parameters: equatorial radius, Cr*A/m via the spacecraft model,
+        # sun body, earth ellipsoid
+        srp_force = DSSTSolarRadiationPressure(
+            sun,
+            earth,
+            radiation_sc,
+            float(Constants.EIGEN5C_EARTH_MU)
+        )
+        forces.append(srp_force)
+
+    # --- 4. Atmospheric Drag ---
+    if include_drag:
+        sun = CelestialBodyFactory.getSun()
+        earth = create_earth_body()
+        # Harris-Priester: empirical static atmosphere, function of altitude
+        # and solar activity proxy (embedded in model tables).
+        # Requires Sun for diurnal bulge calculation.
+        atmosphere = HarrisPriester(sun, earth)
+        # Isotropic drag model: force = 0.5 * Cd * A * ρ * v²
+        drag_sc = IsotropicDrag(float(cross_section), float(Cd))
+        drag_force = DSSTAtmosphericDrag(atmosphere, drag_sc, float(mass_kg))
+        forces.append(drag_force)
+
+    # --- 5. Third-body perturbations (Sun and Moon) ---
+    if include_third_body:
+        sun = CelestialBodyFactory.getSun()
+        moon = CelestialBodyFactory.getMoon()
+        # DSSTThirdBody computes the doubly-averaged disturbing function
+        # from a point-mass third body
+        forces.append(DSSTThirdBody(sun, float(Constants.EIGEN5C_EARTH_MU)))
+        forces.append(DSSTThirdBody(moon, float(Constants.EIGEN5C_EARTH_MU)))
+
+    return forces
 
 
 def create_dsst_propagator(initial_orbit, forces):
