@@ -1,13 +1,7 @@
 import orekit
 orekit.initVM()
 import os
-from orekit.pyhelpers import setup_orekit_curdir, download_orekit_data_curdir
-
-print("this is a test")
-
-if not os.path.exists("term_project/src/orekit-data.zip"):
-    raise TypeError
-    #download_orekit_data_curdir()
+from orekit.pyhelpers import setup_orekit_curdir
 
 setup_orekit_curdir("term_project/src/orekit-data.zip")
 
@@ -24,12 +18,20 @@ from org.orekit.orbits import KeplerianOrbit, PositionAngleType, OrbitType
 from org.orekit.propagation.numerical import NumericalPropagator
 from org.orekit.propagation import SpacecraftState
 from org.orekit.propagation.semianalytical.dsst import DSSTPropagator
-from org.orekit.propagation.semianalytical.dsst.forces import DSSTZonal, DSSTTesseral
+from org.orekit.propagation.semianalytical.dsst.forces import (
+    DSSTZonal, DSSTTesseral, DSSTThirdBody,
+    DSSTSolarRadiationPressure, DSSTAtmosphericDrag
+)
 from org.orekit.propagation import PropagationType
-from org.orekit.bodies import CelestialBodyFactory
+from org.orekit.bodies import CelestialBodyFactory, OneAxisEllipsoid
 from org.orekit.forces.gravity import HolmesFeatherstoneAttractionModel
 from org.orekit.forces.gravity.potential import GravityFieldFactory
+from org.orekit.forces.radiation import IsotropicRadiationSingleCoefficient
+from org.orekit.forces.drag import IsotropicDrag
+from org.orekit.models.earth.atmosphere import HarrisPriester
 from org.hipparchus.ode.nonstiff import DormandPrince853Integrator
+
+
 
 
 # =============================================================================
@@ -145,23 +147,17 @@ def build_full_force_model(gravity_degree=12, gravity_order=12,
     """
     forces = []
 
+    itrf = FramesFactory.getITRF(IERSConventions.IERS_2010, True)
+    gravity_provider = GravityFieldFactory.getUnnormalizedProvider(gravity_degree, gravity_order)
+
     # --- 1. Zonal harmonics (axisymmetric gravity) ---
-    # Uses unnormalized coefficients as required by DSSTZonal
-    zonal_provider = GravityFieldFactory.getUnnormalizedProvider(gravity_degree, 0)
-    forces.append(DSSTZonal(zonal_provider))
+    forces.append(DSSTZonal(itrf, gravity_provider))
 
     # --- 2. Tesseral harmonics (longitude-dependent gravity) ---
     if gravity_order > 0:
-        # DSSTTesseral needs normalized coefficients and Earth's body frame
-        tesseral_provider = GravityFieldFactory.getNormalizedProvider(
-            gravity_degree, gravity_order
-        )
-        itrf = FramesFactory.getITRF(IERSConventions.IERS_2010, True)
-        eci = FramesFactory.getEME2000()
-        # Earth's rotation rate [rad/s] — needed for resonance identification
         earth_rot = Constants.WGS84_EARTH_ANGULAR_VELOCITY
         forces.append(
-            DSSTTesseral(itrf, earth_rot, tesseral_provider)
+            DSSTTesseral(itrf, earth_rot, gravity_provider)
         )
 
     # --- 3. Solar Radiation Pressure ---

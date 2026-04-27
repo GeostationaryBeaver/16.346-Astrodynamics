@@ -21,6 +21,7 @@ from propagate import (
     apply_ROE, run_propagation_dsst,
     CelestialBodyFactory, get_i,
     DSSTZonal,
+    build_full_force_model,
 )
 
 # ── Save directory ──
@@ -43,9 +44,13 @@ sun_pv = sun.getPVCoordinates(initial_date, eci).getPosition()
 sun_ra = np.arctan2(sun_pv.getY(), sun_pv.getX())
 
 # ── Force model: J2 only ──
-gravity_provider = GravityFieldFactory.getUnnormalizedProvider(2, 0)
-j2 = DSSTZonal(gravity_provider)
-perturbs = [j2]
+# gravity_provider = GravityFieldFactory.getUnnormalizedProvider(2, 0)
+# j2 = DSSTZonal(gravity_provider)
+# perturbs = [j2]
+perturbs = build_full_force_model()
+
+side_km = 10
+max_dist = 1.5 #(km)
 
 # ══════════════════════════════════════════════════════════════════════
 # CHIEF ORBIT
@@ -95,5 +100,6 @@ plotting.plot_hill_3d(rel, colors, labels)
 plotting.plot_radial_intrack(rel, colors, labels)
 plotting.plot_intrack_crosstrack(rel, colors, labels)
 plotting.plot_solar_power(times, power, colors, labels)
+plotting.plot_mean_separation_with_exits(times, rel, labels, colors, side_km, max_dist, "")
 
 plt.show()
