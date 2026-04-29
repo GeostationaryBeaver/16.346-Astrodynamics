@@ -36,19 +36,16 @@ from org.orekit.models.earth.atmosphere import HarrisPriester
 from org.hipparchus.ode.nonstiff import DormandPrince853Integrator
 
 
-
-
-
 # =============================================================================
 # SPACECRAFT PHYSICAL CONSTANTS (ISARA-class 3U CubeSat)
 # =============================================================================
-ISARA_MASS_KG = 4.0               # Spacecraft wet mass [kg]
-ISARA_PANEL_AREA_M2 = 0.3         # Total deployable solar panel area [m²]
+ISARA_MASS_KG = 5.0               # Spacecraft wet mass [kg]
+ISARA_PANEL_AREA_M2 = 0.18        # Total deployable solar panel area [m²]
 ISARA_CROSS_SECTION_M2 = 0.06     # Drag cross-section (3U long-axis forward) [m²]
-ISARA_SRP_AREA_M2 = 0.3           # SRP effective area (panels facing sun) [m²]
+ISARA_SRP_AREA_M2 = 0.18          # SRP effective area (panels facing sun) [m²]
 ISARA_CR = 1.5                    # Radiation pressure coefficient [-]
 ISARA_CD = 2.2                    # Drag coefficient [-]
-SOLAR_CELL_EFFICIENCY = 0.283     # Triple-junction GaAs cell efficiency [-]
+SOLAR_CELL_EFFICIENCY = 0.30      # Triple-junction GaAs cell efficiency [-]
 SOLAR_FLUX_W_M2 = 1361.0          # Solar constant at 1 AU [W/m²]
 
 
