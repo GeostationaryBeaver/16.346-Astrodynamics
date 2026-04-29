@@ -127,7 +127,6 @@ def plot_mean_separation_with_exits(times_s, rel_list, labels, colors, box_side_
     ax.axhline(y=max_dist, color = "grey", linestyle="--")
     for k, d in enumerate(dep_sep_km):
         ax.plot(days, d, color=colors[k], label=f"{labels[k]}-Chief")
-
         # box exit marker
         if np.isscalar(box_side_km):
             L = np.array([box_side_km, box_side_km, box_side_km]) * 1000.0

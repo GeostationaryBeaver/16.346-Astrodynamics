@@ -6,6 +6,12 @@ Force model: J2 zonal harmonics only (ideal/simplified).
 Includes solar-power tracking for all three spacecraft.
 """
 
+import orekit
+orekit.initVM()
+from orekit.pyhelpers import setup_orekit_curdir
+setup_orekit_curdir("term_project/src/orekit-data.zip")
+
+
 import plotting
 import numpy as np
 import matplotlib.pyplot as plt
@@ -44,9 +50,6 @@ sun_pv = sun.getPVCoordinates(initial_date, eci).getPosition()
 sun_ra = np.arctan2(sun_pv.getY(), sun_pv.getX())
 
 # ── Force model: J2 only ──
-# gravity_provider = GravityFieldFactory.getUnnormalizedProvider(2, 0)
-# j2 = DSSTZonal(gravity_provider)
-# perturbs = [j2]
 perturbs = build_full_force_model()
 
 side_km = 10
@@ -55,7 +58,7 @@ max_dist = 1.5 #(km)
 # ══════════════════════════════════════════════════════════════════════
 # CHIEF ORBIT
 # ══════════════════════════════════════════════════════════════════════
-a_c  = float(7000e3)
+a_c  = float(1000e3 + Constants.WGS84_EARTH_EQUATORIAL_RADIUS)
 e_c  = float(0.0)
 i_c  = get_i(a_c, e_c)
 arg_peri       = float(0.0)
@@ -70,13 +73,13 @@ chief_orbit = KeplerianOrbit(
 # ══════════════════════════════════════════════════════════════════════
 # DEPUTY INITIALIZATION — HELIX
 # ══════════════════════════════════════════════════════════════════════
-deputy_roes   = init_close_helix_deputies(chief_orbit, 100)
+deputy_roes   = init_close_helix_deputies(chief_orbit, helix_radius_m=500)
 deputy_orbits = [apply_ROE(chief_orbit, r) for r in deputy_roes]
 
 # ══════════════════════════════════════════════════════════════════════
 # TIME GRID
 # ══════════════════════════════════════════════════════════════════════
-T_orb  = 2 * np.pi * float(np.sqrt(a_c**3 / mu))
+# T_orb  = 2 * np.pi * float(np.sqrt(a_c**3 / mu))
 # T_span = 5 * T_orb
 T_span = 6 * 30 * 24 * 3600
 N      = 1500
@@ -97,9 +100,10 @@ colors = ["steelblue", "tomato"]
 labels = ["Deputy 1", "Deputy 2"]
 
 plotting.plot_hill_3d(rel, colors, labels)
-plotting.plot_radial_intrack(rel, colors, labels)
-plotting.plot_intrack_crosstrack(rel, colors, labels)
-plotting.plot_solar_power(times, power, colors, labels)
+#plotting.plot_radial_intrack(rel, colors, labels)
+#plotting.plot_intrack_crosstrack(rel, colors, labels)
+#plotting.plot_solar_power(times, power, colors, labels)
 plotting.plot_mean_separation_with_exits(times, rel, labels, colors, side_km, max_dist, "")
 
 plt.show()
+
