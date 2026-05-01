@@ -1,6 +1,7 @@
 import matplotlib.pyplot as plt
 import numpy as np
 
+plt.rcParams.update({'font.size':15})
 
 def draw_earth(ax, R=6.371e6):
     u = np.linspace(0, 2*np.pi, 36)
@@ -12,18 +13,24 @@ def draw_earth(ax, R=6.371e6):
     ax.plot_surface(x, y, z, color='steelblue', alpha=0.07)
 
 def plot_orbital_elements(days_long, a_l, e_l, i_l, raan_l, argp_l, M_l, path=None):
-    for vals, title in zip(
-        [a_l, e_l, i_l, raan_l, argp_l, M_l],
-        ["a (m)", "e", "i (deg)", "RAAN (deg)", "ω (deg)", "M (deg)"]
-    ):
-        fig, ax = plt.subplots()
+    vals_list = [a_l, e_l, i_l, raan_l, argp_l, M_l]
+    titles = ["a (m)", "e", "i (deg)", "RAAN (deg)", "ω (deg)", "M (deg)"]
+
+    fig, axes = plt.subplots(3, 2, figsize=(12, 10))  # 3 rows, 2 cols
+    axes = axes.flatten()  # makes indexing easier
+
+    for ax, vals, title in zip(axes, vals_list, titles):
         ax.plot(days_long, vals, linewidth=0.8)
         ax.set_title(title)
         ax.set_xlabel("Days")
         ax.grid(True, linestyle='--', alpha=0.4)
-        plt.tight_layout()
-        if path is not None:
-            plt.savefig(f"{path}/{title}.png")
+
+    plt.tight_layout()
+
+    if path is not None:
+        plt.savefig(f"{path}/orbital_elements.png", dpi=300)
+    
+    return fig, ax
 
 
 def plot_earth_frame(chief_eci, dep_eci_exag, snap_idx, colors, labels, EXAG, path=None):
@@ -117,7 +124,7 @@ def plot_intrack_crosstrack(rel_short, colors, labels, path=None):
     if path is not None:
         plt.savefig(f"{path}/Intrack_Crosstrack.png")
 
-def plot_mean_separation_with_exits(times_s, rel_list, labels, colors, max_dist,title="", save_path=None):
+def plot_mean_separation_with_exits(times_s, rel_list, labels, colors, max_dist,title="", path=None):
     days = np.asarray(times_s) / 86400.0
 
     dep_sep_km = [np.linalg.norm(r, axis=1) / 1e3 for r in rel_list]
@@ -146,8 +153,8 @@ def plot_mean_separation_with_exits(times_s, rel_list, labels, colors, max_dist,
     ax.grid(True, alpha=0.3)
     ax.legend()
 
-    if save_path is not None:
-        fig.savefig(f"{save_path}/separations.png", dpi=200, bbox_inches="tight")
+    if path is not None:
+        fig.savefig(f"{path}/separations.png", dpi=200, bbox_inches="tight")
     return fig, ax
 
 def plot_solar_power(times_s, power_dict, colors, labels, path=None):
@@ -242,7 +249,7 @@ def plot_solar_power(times_s, power_dict, colors, labels, path=None):
 
     return fig, (ax1, ax2)
 
-def plot_asymmetric_sep(times_s, rel_list, title="", save_path=None):
+def plot_asymmetric_sep(times_s, rel_list, title="", path=None):
     days = np.asarray(times_s) / 86400.0
 
     dep_sep_km = [np.linalg.norm(r, axis=1) / 1e3 for r in rel_list]
@@ -254,9 +261,9 @@ def plot_asymmetric_sep(times_s, rel_list, title="", save_path=None):
 
     ax.set_xlabel("Time [days]")
     ax.set_ylabel("Separation [km]")
-    ax.set_title(title if title else "Deputy-Chief Separation")
+    ax.set_title(title if title else "Deputy Drift Asymmetry")
     ax.grid(True, alpha=0.3)
 
-    if save_path is not None:
-        fig.savefig(f"{save_path}/asym_separations.png", dpi=200, bbox_inches="tight")
+    if path is not None:
+        fig.savefig(f"{path}/asym_seps.png", dpi=200, bbox_inches="tight")
     return fig, ax

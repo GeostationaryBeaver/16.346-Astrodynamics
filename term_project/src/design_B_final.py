@@ -33,7 +33,7 @@ from propagate import (
 
 # ── Save directory ──
 THIS_DIR = Path(__file__).resolve().parent
-path = THIS_DIR.parent / "figs" / "ideal_force_model" / "j2_resistant" / "design_A"
+path = THIS_DIR.parent / "figs" / "full_force_model" / "design_B"
 
 # ══════════════════════════════════════════════════════════════════════
 # SETUP
@@ -101,11 +101,11 @@ days   = times / 86400
 colors = ["steelblue", "tomato"]
 labels = ["Deputy 1", "Deputy 2"]
 
-# plotting.plot_hill_3d(rel, colors, labels)
-#plotting.plot_radial_intrack(rel, colors, labels)
-#plotting.plot_intrack_crosstrack(rel, colors, labels)
-# plotting.plot_solar_power(times, power, colors, labels)
-plotting.plot_mean_separation_with_exits(times, rel, labels, colors, max_dist, "", specific_dist=True)
+plotting.plot_hill_3d(rel, colors, labels, path=path)
+plotting.plot_radial_intrack(rel, colors, labels, path=path)
+plotting.plot_intrack_crosstrack(rel, colors, labels, path=path)
+plotting.plot_solar_power(times, power, colors, labels, path=path)
+plotting.plot_mean_separation_with_exits(times, rel, labels, colors, max_dist, "", path=path)
+plotting.plot_asymmetric_sep(times,rel, path=path)
 
 plt.show()
-

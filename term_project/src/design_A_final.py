@@ -33,7 +33,7 @@ from propagate import (
 
 # ── Save directory ──
 THIS_DIR = Path(__file__).resolve().parent
-path = THIS_DIR.parent / "figs" / "ideal_force_model" / "j2_resistant" / "design_A"
+path = THIS_DIR.parent / "figs" / "full_force_model" / "design_A" / "pearls"
 
 # ══════════════════════════════════════════════════════════════════════
 # SETUP
@@ -51,10 +51,11 @@ sun_pv = sun.getPVCoordinates(initial_date, eci).getPosition()
 sun_ra = np.arctan2(sun_pv.getY(), sun_pv.getX())
 
 # ── Force model: J2 only ──
-# perturbs = build_full_force_model(gravity_degree=2, gravity_order=0, include_drag=False,include_srp=False, include_third_body=False)
-perturbs = build_full_force_model(gravity_degree=12, gravity_order=12, include_drag=True,include_srp=False, include_third_body=False)
+# perturbs = build_full_force_model(gravity_degree=2, gravity_order=0,
+#                                   include_drag=False,include_srp=False,
+#                                   include_third_body=False)
+perturbs = build_full_force_model()
 
-side_km = 10
 max_dist = 1.5 #(km)
 
 # ══════════════════════════════════════════════════════════════════════
@@ -102,12 +103,12 @@ days   = times / 86400
 colors = ["steelblue", "tomato"]
 labels = ["Deputy 1", "Deputy 2"]
 
-# plotting.plot_hill_3d(rel, colors, labels)
-# plotting.plot_radial_intrack(rel, colors, labels)
-# plotting.plot_intrack_crosstrack(rel, colors, labels)
-# plotting.plot_solar_power(times, power, colors, labels)
-# plotting.plot_mean_separation_with_exits(times, rel, labels, colors, max_dist, "", specific_dist=False)
-plotting.plot_asymmetric_sep(times,rel)
+plotting.plot_hill_3d(rel, colors, labels, path=path)
+plotting.plot_radial_intrack(rel, colors, labels, path=path)
+plotting.plot_intrack_crosstrack(rel, colors, labels, path=path)
+plotting.plot_solar_power(times, power, colors, labels, path=path)
+plotting.plot_mean_separation_with_exits(times, rel, labels, colors, max_dist, "", path=path)
+plotting.plot_asymmetric_sep(times,rel, path=path)
 
 plt.show()
 
