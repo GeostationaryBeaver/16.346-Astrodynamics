@@ -117,30 +117,27 @@ def plot_intrack_crosstrack(rel_short, colors, labels, path=None):
     if path is not None:
         plt.savefig(f"{path}/Intrack_Crosstrack.png")
 
-def plot_mean_separation_with_exits(times_s, rel_list, labels, colors, box_side_km, max_dist,title="", save_path=None):
+def plot_mean_separation_with_exits(times_s, rel_list, labels, colors, max_dist,title="", save_path=None):
     days = np.asarray(times_s) / 86400.0
 
-    dep_sep_km = [np.linalg.norm(r, axis=1) / 1000.0 for r in rel_list]
+    dep_sep_km = [np.linalg.norm(r, axis=1) / 1e3 for r in rel_list]
+
 
     fig, ax = plt.subplots(figsize=(10, 5))
 
     ax.axhline(y=max_dist, color = "grey", linestyle="--")
+    
     for k, d in enumerate(dep_sep_km):
         ax.plot(days, d, color=colors[k], label=f"{labels[k]}-Chief")
-        # box exit marker
-        if np.isscalar(box_side_km):
-            L = np.array([box_side_km, box_side_km, box_side_km]) * 1000.0
-        else:
-            L = np.array(box_side_km) * 1000.0
-        half = 0.5 * L
-        outside = np.any(np.abs(rel_list[k]) > half, axis=1)
-        # # Temporary debug check: is the TOTAL distance > 5km?
-        # dist = np.linalg.norm(rel_list[k], axis=1)
-        # outside = dist > 5000.0
+
+        dist = np.linalg.norm(rel_list[k], axis=1)
+
+        outside = dist >= (max_dist * 1e3)
         if np.any(outside):
-            idx = int(np.argmax(outside))
+            idx = np.argmax(outside)  # first True index
             x = days[idx]
-            ax.axvline(x, color=colors[k], ls="--", alpha=0.8)
+
+            ax.axvline(x, color=colors[k])
             ax.plot(x, d[idx], "o", color=colors[k], ms=5)
 
     ax.set_xlabel("Time [days]")
@@ -244,3 +241,22 @@ def plot_solar_power(times_s, power_dict, colors, labels, path=None):
         fig.savefig(f"{path}/Solar_Power.png", dpi=200, bbox_inches="tight")
 
     return fig, (ax1, ax2)
+
+def plot_asymmetric_sep(times_s, rel_list, title="", save_path=None):
+    days = np.asarray(times_s) / 86400.0
+
+    dep_sep_km = [np.linalg.norm(r, axis=1) / 1e3 for r in rel_list]
+
+    fig, ax = plt.subplots(figsize=(10, 5))
+
+    sep_diffs = np.abs(np.array(dep_sep_km[0]) - np.array(dep_sep_km[1]))
+    ax.plot(days, sep_diffs)
+
+    ax.set_xlabel("Time [days]")
+    ax.set_ylabel("Separation [km]")
+    ax.set_title(title if title else "Deputy-Chief Separation")
+    ax.grid(True, alpha=0.3)
+
+    if save_path is not None:
+        fig.savefig(f"{save_path}/asym_separations.png", dpi=200, bbox_inches="tight")
+    return fig, ax

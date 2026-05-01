@@ -52,10 +52,9 @@ sun_ra = np.arctan2(sun_pv.getY(), sun_pv.getX())
 
 # ── Force model: J2 only ──
 # perturbs = build_full_force_model(gravity_degree=2, gravity_order=0, include_drag=False,include_srp=False, include_third_body=False)
-perturbs = build_full_force_model(gravity_degree=12, gravity_order=12, include_drag=True,include_srp=False, include_third_body=False)
+perturbs = build_full_force_model()
 
-side_km = 10
-max_dist = 1.5 #(km)
+max_dist = 5.0
 
 # ══════════════════════════════════════════════════════════════════════
 # CHIEF ORBIT
@@ -75,8 +74,8 @@ chief_orbit = KeplerianOrbit(
 # ══════════════════════════════════════════════════════════════════════
 # DEPUTY INITIALIZATION — HELIX
 # ══════════════════════════════════════════════════════════════════════
-# deputy_roes   = init_close_helix_deputies(chief_orbit, helix_radius_m=300)
-deputy_roes = init_string_of_pearls(chief_orbit, separation_m=500.0)
+init_sep = 2e3 #m
+deputy_roes   = init_string_of_pearls(chief_orbit, init_sep)
 deputy_orbits = [apply_ROE(chief_orbit, r) for r in deputy_roes]
 
 # ══════════════════════════════════════════════════════════════════════
@@ -103,11 +102,10 @@ colors = ["steelblue", "tomato"]
 labels = ["Deputy 1", "Deputy 2"]
 
 # plotting.plot_hill_3d(rel, colors, labels)
-# plotting.plot_radial_intrack(rel, colors, labels)
-# plotting.plot_intrack_crosstrack(rel, colors, labels)
+#plotting.plot_radial_intrack(rel, colors, labels)
+#plotting.plot_intrack_crosstrack(rel, colors, labels)
 # plotting.plot_solar_power(times, power, colors, labels)
-# plotting.plot_mean_separation_with_exits(times, rel, labels, colors, max_dist, "", specific_dist=False)
-plotting.plot_asymmetric_sep(times,rel)
+plotting.plot_mean_separation_with_exits(times, rel, labels, colors, max_dist, "", specific_dist=True)
 
 plt.show()
 

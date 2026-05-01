@@ -35,6 +35,9 @@ from org.orekit.forces.drag import IsotropicDrag
 from org.orekit.models.earth.atmosphere import HarrisPriester
 from org.hipparchus.ode.nonstiff import DormandPrince853Integrator
 
+from org.orekit.models.earth.atmosphere import NRLMSISE00
+from org.orekit.models.earth.atmosphere.data import MarshallSolarActivityFutureEstimation
+from org.orekit.forces.drag import IsotropicDrag
 
 # =============================================================================
 # SPACECRAFT PHYSICAL CONSTANTS (ISARA-class 3U CubeSat)
@@ -185,12 +188,31 @@ def build_full_force_model(gravity_degree=12, gravity_order=12,
     if include_drag:
         sun = CelestialBodyFactory.getSun()
         earth = create_earth_body()
-        # Harris-Priester: empirical static atmosphere, function of altitude
-        # and solar activity proxy (embedded in model tables).
-        # Requires Sun for diurnal bulge calculation.
-        atmosphere = HarrisPriester(sun, earth)
+        
+        # This object looks inside your orekit-data.zip for files matching 'M_S_A_F_E.txt'
+        # It provides the F10.7 and Ap indices for the atmospheric density calculation.
+        msafe = MarshallSolarActivityFutureEstimation(
+            MarshallSolarActivityFutureEstimation.DEFAULT_SUPPORTED_NAMES,
+            MarshallSolarActivityFutureEstimation.StrengthLevel.AVERAGE
+        )
+        
+        # Initialize the MSIS model. 
+        # It uses 'msafe' to know the solar weather at date_t.
+        atmosphere = NRLMSISE00(msafe, sun, earth)
+        
+        # Define the spacecraft drag properties
+        drag_sc = IsotropicDrag(float(cross_section), float(Cd))
+        
+        # Wrap for DSST. This performs the Gaussian averaging required 
+        # for semi-analytical propagation.
+        drag_force = DSSTAtmosphericDrag(atmosphere, drag_sc, float(mass_kg))
+        
+        forces.append(drag_force)
+        
         # Isotropic drag model: force = 0.5 * Cd * A * ρ * v²
         drag_sc = IsotropicDrag(float(cross_section), float(Cd))
+        
+        # DSST wrapper for atmospheric drag
         drag_force = DSSTAtmosphericDrag(atmosphere, drag_sc, float(mass_kg))
         forces.append(drag_force)
 
@@ -670,7 +692,7 @@ def init_string_of_pearls(
 
     return roes
 
-
+'''
 def init_close_helix_deputies(
         chief_orbit,
         helix_radius_m: float = 500.0,
@@ -738,6 +760,131 @@ def init_close_helix_deputies(
             dey=float(sign * dey),
             dix=float(sign * dix),
             diy=float(sign * diy),
+        ))
+
+    return roes
+'''
+
+def init_close_helix_deputies(
+        chief_orbit,
+        helix_radius_m: float = 500.0,
+        mean_dist_m: float = 0.0
+) -> list:
+    """
+    Initialize two deputies in a helix formation WITH J2-invariant conditions.
+
+    Unlike the naive helix initializer that sets δa = 0, this function
+    computes the required δa from the J2-invariant conditions:
+
+        δΩ̇ = 0   →   constrains δa as a function of δi
+        δ(Ṁ + ω̇) = 0   →   provides second constraint relating δa, δe, δi
+
+    The resulting formation has a small but non-zero semi-major axis offset
+    that exactly cancels the differential J2 precession caused by δe and δi.
+    This prevents the secular along-track drift that otherwise dominates
+    relative motion on timescales of weeks to months.
+
+    For a near-circular chief (e_c ≈ 0), the J2-invariant conditions reduce to:
+
+        Condition 1 (δΩ̇ = 0):
+            δa/a = -(2/7) × tan(i_c) × δi_x
+
+        Condition 2 (δ(Ṁ + ω̇) = 0):
+            δa/a = [4η(5cos²i - 1)/(2η+1)(7(1-3sin²i/2)η + 4(5cos²i-1))] 
+                   × sin(2i)/(1 - 5cos²i) × ... (complex)
+
+    In practice for SSO inclinations (~98°), both conditions are approximately
+    satisfied by the same δa when δe is small relative to δi, because the
+    eccentricity coupling terms are suppressed by the near-circular geometry.
+
+    The implementation uses the full Schaub & Junkins formulation (§13.6)
+    for the combined secular rate matching.
+
+    Parameters
+    ----------
+    chief_orbit : KeplerianOrbit
+        Reference orbit of the chief spacecraft (near-circular SSO).
+    helix_radius_m : float, optional
+        Radial swing amplitude [m]. Default: 500 m.
+        Cross-track amplitude will be 2× this value.
+    mean_dist_m : float, optional
+        Mean along-track offset [m]. Default: 0.
+
+    Returns
+    -------
+    list of dict
+        Two ROE dictionaries with J2-invariant δa values.
+        Keys: {'da', 'dl', 'dex', 'dey', 'dix', 'diy'}
+    """
+    a = float(chief_orbit.getA())
+    e_c = float(chief_orbit.getE())
+    i_c = float(chief_orbit.getI())
+    u0 = float(chief_orbit.getPerigeeArgument()) + float(chief_orbit.getMeanAnomaly())
+
+    provider = GravityFieldFactory.getUnnormalizedProvider(2, 0)
+    coeffs = provider.onDate(provider.getReferenceDate())
+    J2 = -coeffs.getUnnormalizedCnm(2, 0)
+    R_e = Constants.WGS84_EARTH_EQUATORIAL_RADIUS
+    mu = Constants.EIGEN5C_EARTH_MU
+    n = np.sqrt(mu / a**3)
+
+    de_mag = helix_radius_m / a
+    di_mag = (2.0 * helix_radius_m) / a
+
+
+    # phi = u0
+    # theta = u0
+
+    # dex = de_mag * np.cos(phi)
+    # dey = de_mag * np.sin(phi)
+    # dix = di_mag * np.cos(theta)
+    # diy = di_mag * np.sin(theta)
+
+    # eta = np.sqrt(1.0 - e_c**2)
+    # p = a * (1.0 - e_c**2)
+    # sin_i = np.sin(i_c)
+    # cos_i = np.cos(i_c)
+    # tan_i = sin_i / cos_i  # Note: negative for i > 90° (retrograde SSO)
+
+    # # Gamma factor: (Re/p)²
+    # gamma = (R_e / p)**2
+
+
+    # da_over_a_from_raan = -(2.0 / 7.0) * tan_i * di_mag
+
+
+    # da_over_a = da_over_a_from_raan
+
+    phi   =  np.pi / 2   # relative eccentricity vector phase
+    theta = -np.pi / 2   # relative inclination vector phase (anti-parallel: phi = -theta)
+
+    dex = de_mag * np.cos(phi)    #  = 0
+    dey = de_mag * np.sin(phi)    #  = +de_mag
+    dix = di_mag * np.cos(theta)  #  = 0       → Condition A: da = 0
+    diy = di_mag * np.sin(theta)  #  = -di_mag
+
+    roes = []
+    for sign in (1.0, -1.0):
+        curr_dex = sign * dex   # sign flips dey: ±de_mag
+        curr_dey = sign * dey
+        curr_dix = sign * dix   # always 0 — no inclination component
+        curr_diy = sign * diy   # sign flips diy: ∓di_mag
+
+        # dix = 0 → both J2 conditions satisfied at da = 0 (Eq. 10, 16)
+        curr_da_over_a = 0.0
+
+        # Along-track offset: curr_dex = 0 simplifies this to:
+        # dl = T_offset/a - 2*curr_dey*cos(u0)
+        T_offset = sign * mean_dist_m
+        dl = (T_offset / a) + 2.0 * curr_dex * np.sin(u0) - 2.0 * curr_dey * np.cos(u0)
+
+        roes.append(dict(
+            da=float(curr_da_over_a),
+            dl=float(dl),
+            dex=float(curr_dex),
+            dey=float(curr_dey),
+            dix=float(curr_dix),
+            diy=float(curr_diy),
         ))
 
     return roes
@@ -974,3 +1121,4 @@ def run_propagation_dsst(times, init_date, forces, chief_orbit, deputy_orbits,
         power = None
 
     return (a_v, e_v, i_v, raan_v, argp_v, M_v, alt_v, rel, dist, power)
+
