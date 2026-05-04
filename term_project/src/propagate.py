@@ -600,7 +600,7 @@ def compute_solar_power(r_sc_eci, r_sun_eci,
 
     return efficiency * panel_area * S * cos_incidence
 
-
+'''
 def init_string_of_pearls(
     chief_orbit,
     separation_m: float = 1000.0,
@@ -684,79 +684,48 @@ def init_string_of_pearls(
         ))
 
     return roes
-
 '''
-def init_close_helix_deputies(
-        chief_orbit,
-        helix_radius_m: float = 500.0,
-        mean_dist_m: float = 0.0
+def init_string_of_pearls(
+    chief_orbit,
+    separation_m: float = 1000.0,
+    osc_fraction: float = 0.1,
 ) -> list:
-    """
-    Initialize two deputies in a 'helix' formation with passive safety.
+    a  = float(chief_orbit.getA())
+    u0 = (float(chief_orbit.getPerigeeArgument())
+          + float(chief_orbit.getMeanAnomaly()))
 
-    The helix formation places deputies on opposite sides of a relative
-    motion ellipse that wraps around the chief. Passive safety is achieved
-    by enforcing parallel eccentricity/inclination vector separation
-    (Spurmann & D'Amico, 2011), ensuring the deputies never cross through
-    the chief's position even without active control.
+    de_mag = osc_fraction * separation_m / a
+    di_mag = osc_fraction * separation_m / a
 
-    The geometry produces:
-      - Radial oscillation amplitude: a * δe (= helix_radius_m)
-      - Cross-track oscillation amplitude: a * δi (= 2 * helix_radius_m)
-      - The 2:1 scaling creates a quasi-circular cross-section in the
-        radial-crosstrack plane
+    # Eccentricity: phase for zero initial radial offset
+    phi_e = u0 + np.pi / 2.0
+    dex   = de_mag * np.cos(phi_e)
+    dey   = de_mag * np.sin(phi_e)
 
-    Parameters
-    ----------
-    chief_orbit : KeplerianOrbit
-        Reference orbit of the chief spacecraft.
-    helix_radius_m : float, optional
-        Radial swing amplitude of the relative motion [m]
-    mean_dist_m    : Mean along-track offset from chief (m).
-                     Set to 0 to circle exactly around the chief.
-    """
-    a = float(chief_orbit.getA())
-    # u0 is the Argument of Latitude (perigee + mean anomaly)
-    u0 = float(chief_orbit.getPerigeeArgument()) + float(chief_orbit.getMeanAnomaly())
-
-    # Magnitudes for ROEs
-    # For a quasi-circular relative orbit:
-    # Radial swing is a*de, Cross-track swing is a*di
-    de_mag = helix_radius_m / a
-    di_mag = (2.0 * helix_radius_m) / a  # Standard scaling for 'circular' look
-
-    # Passive Safety Phase: Parallel Vectors
-    # We want the phase of the e-vector (phi) and i-vector (theta)
-    # to be aligned with the current position u0.
-    phi = u0  # phase of eccentricity vector
-    theta = u0  # phase of inclination vector
-
-    # Decompose into ROE components
-    dex = de_mag * np.cos(phi)
-    dey = de_mag * np.sin(phi)
-
-    dix = di_mag * np.cos(theta)
-    diy = di_mag * np.sin(theta)
+    # Inclination: FORCE dix = 0 for J2-invariance
+    # Put all δi into diy (RAAN component)
+    # This means nonzero initial cross-track offset, but bounded
+    dix = 0.0
+    diy = di_mag   # or -di_mag, doesn't matter for J2
 
     roes = []
-    # Create two deputies on opposite sides of the helix
     for sign in (1.0, -1.0):
-        # The mean distance (dl) is modified by the eccentricity to
-        # keep the 'instantaneous' T0 centered at mean_dist_m
-        T_offset = sign * mean_dist_m
-        dl = (T_offset / a) + 2.0 * (sign * dex) * np.sin(u0) - 2.0 * (sign * dey) * np.cos(u0)
+        curr_dex = sign * dex
+        curr_dey = sign * dey
+        curr_diy = sign * diy
 
+        T0 = sign * separation_m
+        dl = (T0 / a) + 2.0 * curr_dex * np.sin(u0) - 2.0 * curr_dey * np.cos(u0)
         roes.append(dict(
-            da= 0.0,
+            da=0.0,
             dl=float(dl),
-            dex=float(sign * dex),
-            dey=float(sign * dey),
-            dix=float(sign * dix),
-            diy=float(sign * diy),
+            dex=float(curr_dex),
+            dey=float(curr_dey),
+            dix=0.0,
+            diy=float(curr_diy),
         ))
 
     return roes
-'''
 
 def init_close_helix_deputies(
         chief_orbit,
