@@ -33,7 +33,7 @@ from propagate import (
 
 # ── Save directory ──
 THIS_DIR = Path(__file__).resolve().parent
-path = THIS_DIR.parent / "figs" / "full_force_model" / "design_A" / "helix"
+path = THIS_DIR.parent / "figs" / "ideal_force_model" / "design_A" / "pearls"
 
 # ══════════════════════════════════════════════════════════════════════
 # SETUP
@@ -51,10 +51,10 @@ sun_pv = sun.getPVCoordinates(initial_date, eci).getPosition()
 sun_ra = np.arctan2(sun_pv.getY(), sun_pv.getX())
 
 # ── Force model: J2 only ──
-# perturbs = build_full_force_model(gravity_degree=2, gravity_order=0,
-#                                   include_drag=False,include_srp=False,
-#                                   include_third_body=False)
-perturbs = build_full_force_model()
+perturbs = build_full_force_model(gravity_degree=2, gravity_order=0,
+                                  include_drag=False,include_srp=False,
+                                  include_third_body=False)
+# perturbs = build_full_force_model()
 
 max_dist = 1.5 #(km)
 
@@ -76,8 +76,8 @@ chief_orbit = KeplerianOrbit(
 # ══════════════════════════════════════════════════════════════════════
 # DEPUTY INITIALIZATION — HELIX
 # ══════════════════════════════════════════════════════════════════════
-deputy_roes   = init_close_helix_deputies(chief_orbit, helix_radius_m=300)
-# deputy_roes     = init_string_of_pearls(chief_orbit, separation_m=500)
+# deputy_roes   = init_close_helix_deputies(chief_orbit, helix_radius_m=300)
+deputy_roes     = init_string_of_pearls(chief_orbit, separation_m=500)
 deputy_orbits = [apply_ROE(chief_orbit, r) for r in deputy_roes]
 
 # ══════════════════════════════════════════════════════════════════════
