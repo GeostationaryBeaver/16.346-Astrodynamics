@@ -1803,105 +1803,74 @@ def run_propagation_dsst_with_sk(times, init_date, forces, chief_orbit,
                 x_tgt = target_roes[k]
                 a_dep = float(dep_kep.getA())
                 n_dep = np.sqrt(mu / a_dep**3)
+                v_dep = n_dep * a_dep  # FIXED: Orbital velocity for converting dimensionless to m/s
 
                 # Dimensional errors [m]
                 err = x_now - x_tgt
-                err_da  = err[0]        # [m] = a × δ(a/a)
-                err_dl  = err[2]        # [m] = a × δλ
-                err_dix = err[3]        # [m] = a × δix
-                err_diy = err[4]        # [m] = a × δiy
-                err_dex = err[5]        # [m] = a × δex
-                err_dey = err[6]        # [m] = a × δey
-
-                # ════════════════════════════════════════════════════════
-                # TANGENTIAL BURN: Controls δa (and δe as side-effect)
-                #
-                # Strategy: The DOMINANT error is δλ (along-track drift).
-                # We correct it by establishing a temporary δa offset that
-                # creates drift back toward the target.
-                #
-                # Required δa offset to zero δλ in time τ:
-                #   Δ(δa/a) = -δλ_error / ((3/2) n × τ)
-                #
-                # Then the tangential burn to create this δa:
-                #   δvT = (n/2) × Δ(δa/a) × a   ... NO!
-                #   δvT = (n/2) × Δ(δa/a)       [m/s, since B gives δ(a/a) = 2δvT/n]
-                # ════════════════════════════════════════════════════════
-
-                # Time horizon to correct δλ — shorter = more aggressive
-                tau = 1.0 * T_orb   # correct over 1 orbit
+                err_da  = err[0]
+                err_dl  = err[2]
+                err_dix = err[3]
+                err_diy = err[4]
+                err_dex = err[5]
+                err_dey = err[6]
 
                 # Convert errors to dimensionless
-                err_da_dimless = err_da / a_dep      # δ(a/a)
-                err_dl_dimless = err_dl / a_dep      # δλ [rad]
+                err_da_dimless  = err_da / a_dep
+                err_dl_dimless  = err_dl / a_dep
+                err_dix_dimless = err_dix / a_dep
+                err_diy_dimless = err_diy / a_dep
+                err_dex_dimless = err_dex / a_dep
+                err_dey_dimless = err_dey / a_dep
 
-                # Desired δa correction = fix current δa error + extra to drift δλ back
-                nu_drift = -(3.0 / 2.0) * n_dep     # along-track drift rate [rad/s per δa/a]
+                # ════════════════════════════════════════════════════════
+                # TANGENTIAL BURN: Controls δa and δλ
+                # ════════════════════════════════════════════════════════
+                tau = 1.0 * T_orb   # correct over 1 orbit
+                nu_drift = -(3.0 / 2.0) * n_dep
                 
                 if abs(nu_drift * tau) > 1e-12:
                     da_for_dl = -err_dl_dimless / (nu_drift * tau)
                 else:
                     da_for_dl = 0.0
 
-                # Total desired δ(a/a) change this step
                 da_total_dimless = -err_da_dimless + da_for_dl
-
-                # Apply gain (don't try to fix everything at once)
                 gain_at = 0.5 * min(dt_step / T_orb, 1.0)
                 da_cmd = gain_at * da_total_dimless
 
-                # Convert to tangential burn: δ(a/a) = (2/n)×δvT → δvT = n×δ(a/a)/2
-                dvT = n_dep * da_cmd / 2.0
+                # FIXED: Multiply by v_dep instead of n_dep
+                dvT = v_dep * da_cmd / 2.0
 
                 # ════════════════════════════════════════════════════════
                 # NORMAL BURN: Controls δix, δiy
-                #
-                # From B matrix: δix = cos(u)×δvN/n, δiy = sin(u)×δvN/n
-                # We want to reduce the inclination vector error.
-                # At the current u, the achievable correction is:
-                #   δvN → Δδix = cos(u)×δvN/n, Δδiy = sin(u)×δvN/n
-                #
-                # Optimal: project the error onto the achievable direction
                 # ════════════════════════════════════════════════════════
                 argp_d = float(dep_kep.getPerigeeArgument())
                 M_d    = float(dep_kep.getMeanAnomaly())
                 u_now  = argp_d + M_d
+                sin_u  = np.sin(u_now)
+                cos_u  = np.cos(u_now)
 
-                sin_u = np.sin(u_now)
-                cos_u = np.cos(u_now)
-
-                err_dix_dimless = err_dix / a_dep
-                err_diy_dimless = err_diy / a_dep
-
-                # Project inclination error onto the achievable direction at this u
-                # Achievable direction: [cos(u), sin(u)] in (δix, δiy) space
-                # Projection: component of error along [cos(u), sin(u)]
-                proj = err_dix_dimless * cos_u + err_diy_dimless * sin_u
-
-                # Gain for normal direction
+                proj_i = err_dix_dimless * cos_u + err_diy_dimless * sin_u
                 gain_n = 0.3 * min(dt_step / T_orb, 1.0)
-                dvN_needed = -gain_n * n_dep * proj  # δvN = n × δi_proj, with sign
+                
+                # FIXED: Multiply by v_dep instead of n_dep
+                dvN_needed = -gain_n * v_dep * proj_i
+
+                # ════════════════════════════════════════════════════════
+                # RADIAL BURN (ADDED): Controls δex, δey
+                # A Helix requires eccentricity control to maintain the radial bounds!
+                # ════════════════════════════════════════════════════════
+                # Achievable δe direction using RADIAL burn: [sin(u), -cos(u)]
+                proj_e = err_dex_dimless * sin_u - err_dey_dimless * cos_u
+                gain_e = 0.3 * min(dt_step / T_orb, 1.0)
+                
+                dvR_needed = -gain_e * v_dep * proj_e
 
                 # ════════════════════════════════════════════════════════
                 # ASSEMBLE AND APPLY
                 # ════════════════════════════════════════════════════════
-                dv_rtN = np.array([0.0, dvT, dvN_needed])
+                # Place dvR_needed in the 0th index for the Radial axis
+                dv_rtN = np.array([dvR_needed, dvT, dvN_needed])
                 dv_mag = np.linalg.norm(dv_rtN)
-
-                # Skip negligible burns
-                if dv_mag < min_dv:
-                    if track_power:
-                        r_dep = r_vec + dr
-                        v_dep = np.array([v_d.getX(), v_d.getY(), v_d.getZ()])
-                        dep_power[k].append(
-                            compute_solar_power(r_dep, r_sun, v_sc_eci=v_dep))
-                    continue
-
-                # Safety cap
-                max_dv_per_step = 0.5  # m/s
-                if dv_mag > max_dv_per_step:
-                    dv_rtN = dv_rtN * (max_dv_per_step / dv_mag)
-                    dv_mag = max_dv_per_step
 
                 # Apply burn
                 try:
@@ -2019,17 +1988,19 @@ def _apply_impulsive_burn(dep_prop, dep_orbit_mean, dv_rtN,
     sin_u = np.sin(u_m)
     cos_u = np.cos(u_m)
 
-    # B / n gives dimensionless ROE change per m/s of delta-v
+    # Orbital velocity is V = n * a. We divide by V to convert m/s to dimensionless.
+    v_orb = n * a
+
     # Row order: [δ(a/a), δȧ, δλ, δix, δiy, δex, δey]
     B_dimless = np.array([
-        [ 0.0,       2.0,      0.0    ],   # δ(a/a)  = (2/n)·δvT
+        [ 0.0,       2.0,      0.0    ],   # δ(a/a) = (2 / V)·δvT
         [ 0.0,       0.0,      0.0    ],   # δȧ (unaffected)
-        [-2.0,       0.0,      0.0    ],   # δλ = -(2/n)·δvR
-        [ 0.0,       0.0,      cos_u  ],   # δix = (cos u / n)·δvN
-        [ 0.0,       0.0,      sin_u  ],   # δiy = (sin u / n)·δvN
+        [-2.0,       0.0,      0.0    ],   # δλ = -(2 / V)·δvR
+        [ 0.0,       0.0,      cos_u  ],   # δix = (cos u / V)·δvN
+        [ 0.0,       0.0,      sin_u  ],   # δiy = (sin u / V)·δvN
         [ sin_u,     2*cos_u,  0.0    ],   # δex
         [-cos_u,     2*sin_u,  0.0    ],   # δey
-    ]) / n  # units: [s] per [m/s] → dimensionless
+    ]) / v_orb
 
     # ── Step 3: DIMENSIONLESS ROE change ──
     d_roe_dimless = B_dimless @ dv_rtN  # dimensionless δα vector
@@ -2382,10 +2353,15 @@ def run_propagation_dsst_pearls_sk(times, init_date, forces, chief_orbit,
                 # We want this to stay below ~500m (1/6 of deadband width)
                 de_threshold = 500.0    # [m] max allowed δe growth
                 di_threshold = 500.0    # [m] max allowed δi growth
+                # Orbital velocity for dimension conversion
+                v_dep = n_dep * a_dep  
 
                 # ════════════════════════════════════════════════════
-                # PRIORITY 1: Deadband longitude control (same as before)
+                # PRIORITY 1: Deadband longitude control
                 # ════════════════════════════════════════════════════
+                dvT, dvR, dvN = 0.0, 0.0, 0.0
+                burn_reason = None
+
                 if sign_T > 0:
                     exceeded_far  = T_now > T_max_m
                     exceeded_near = T_now < T_min_m
@@ -2396,116 +2372,66 @@ def run_propagation_dsst_pearls_sk(times, init_date, forces, chief_orbit,
                 boundary_near = T_min_m if sign_T > 0 else -T_min_m
                 boundary_far  = T_max_m if sign_T > 0 else -T_max_m
 
-                dvT = 0.0
-                dvN = 0.0
-                burn_reason = None
-
                 if exceeded_far or exceeded_near:
-                    # Aim for opposite boundary
-                    if exceeded_far:
-                        T_target = boundary_near
-                        burn_reason = "FAR"
-                    else:
-                        T_target = boundary_far
-                        burn_reason = "NEAR"
+                    T_target = boundary_near if exceeded_far else boundary_far
+                    burn_reason = "FAR" if exceeded_far else "NEAR"
 
                     T_dot_desired = (T_target - T_now) / tau_drift
                     da_target_dimless = -T_dot_desired / ((3.0 / 2.0) * n_dep * a_dep)
                     da_now_dimless = da_now / a_dep
                     delta_da_dimless = da_target_dimless - da_now_dimless
-                    dvT = (n_dep / 2.0) * delta_da_dimless
+                    
+                    # FIXED: Multiplied by v_dep (n * a) instead of just n
+                    dvT = (v_dep / 2.0) * delta_da_dimless
 
                 # ════════════════════════════════════════════════════
-                # PRIORITY 2: Eccentricity vector maintenance
-                #
-                # From B-matrix: a tangential burn at argument of
-                # latitude u changes δe as:
-                #   Δ(δex) = (2cos u / n) × δvT
-                #   Δ(δey) = (2sin u / n) × δvT
-                #
-                # But we don't want to disturb δa (which controls δλ).
-                # Solution: use PAIRED burns at u and u+π that cancel
-                # in δa but add in δe. However, this requires waiting
-                # for the right u.
-                #
-                # Simpler approach for a deadband controller:
-                # Accept that tangential burns for δa also affect δe,
-                # and add a SEPARATE normal correction for δi.
-                # For δe, add a small correction when the longitude
-                # burn fires (it's already changing δe anyway).
-                #
-                # Even simpler: just correct δe/δi with small
-                # proportional feedback whenever they exceed threshold,
-                # accepting the small δa side-effect.
+                # PRIORITY 2: Eccentricity vector maintenance (Decoupled)
+                # Using RADIAL burns. Radial burns change e via sin(u) 
+                # and cos(u) but leave the mean semi-major axis untouched!
                 # ════════════════════════════════════════════════════
                 if de_err_mag > de_threshold and burn_reason is None:
-                    # Correct δe using tangential burn at current u
-                    # Effect: Δ(δex) = 2cos(u)×δvT/n, Δ(δey) = 2sin(u)×δvT/n
-                    # We project the error onto the achievable direction
                     argp_d = float(dep_kep.getPerigeeArgument())
                     M_d    = float(dep_kep.getMeanAnomaly())
                     u_now  = argp_d + M_d
-                    cos_u  = np.cos(u_now)
-                    sin_u  = np.sin(u_now)
+                    cos_u, sin_u = np.cos(u_now), np.sin(u_now)
 
-                    # Achievable δe direction at this u: [2cos(u), 2sin(u)]/n
-                    # Project error onto this direction
                     err_dex_dimless = err_dex / a_dep
                     err_dey_dimless = err_dey / a_dep
-                    proj_e = err_dex_dimless * cos_u + err_dey_dimless * sin_u
+                    
+                    # Achievable δe direction using RADIAL burn: [sin(u), -cos(u)] / V
+                    proj_e_radial = err_dex_dimless * sin_u - err_dey_dimless * cos_u
 
-                    # Gain: correct 30% of projected error
                     gain_e = 0.3
-                    dvT_e = -(gain_e * n_dep * proj_e) / 2.0
-
-                    dvT += dvT_e
-                    burn_reason = "δe"
+                    # FIXED: Velocity scaling
+                    dvR = -(gain_e * v_dep * proj_e_radial)
+                    burn_reason = "δe_radial"
 
                 # ════════════════════════════════════════════════════
                 # PRIORITY 3: Inclination vector maintenance
-                #
-                # Normal burns at argument of latitude u:
-                #   Δ(δix) = cos(u) × δvN / n
-                #   Δ(δiy) = sin(u) × δvN / n
-                #
-                # Project inclination error onto achievable direction.
                 # ════════════════════════════════════════════════════
                 if di_err_mag > di_threshold:
                     argp_d = float(dep_kep.getPerigeeArgument())
                     M_d    = float(dep_kep.getMeanAnomaly())
                     u_now  = argp_d + M_d
-                    cos_u  = np.cos(u_now)
-                    sin_u  = np.sin(u_now)
+                    cos_u, sin_u = np.cos(u_now), np.sin(u_now)
 
                     err_dix_dimless = err_dix / a_dep
                     err_diy_dimless = err_diy / a_dep
                     proj_i = err_dix_dimless * cos_u + err_diy_dimless * sin_u
 
                     gain_i = 0.3
-                    dvN = -(gain_i * n_dep * proj_i)
+                    # FIXED: Velocity scaling
+                    dvN = -(gain_i * v_dep * proj_i)
 
-                    if burn_reason is None:
-                        burn_reason = "δi"
-                    else:
-                        burn_reason += "+δi"
+                    burn_reason = "δi" if burn_reason is None else burn_reason + "+δi"
 
                 # ════════════════════════════════════════════════════
-                # ASSEMBLE AND APPLY
+                # ASSEMBLE AND APPLY (RTN Frame)
                 # ════════════════════════════════════════════════════
                 if burn_reason is not None:
-                    dv_rtN = np.array([0.0, dvT, dvN])
+                    # Notice dvR is placed in the first index (Radial)
+                    dv_rtN = np.array([dvR, dvT, dvN])
                     dv_mag = np.linalg.norm(dv_rtN)
-
-                    if dv_mag < min_dv:
-                        if track_power:
-                            r_dep = r_vec + dr
-                            v_dep = np.array([v_d.getX(), v_d.getY(),
-                                              v_d.getZ()])
-                            dep_power[k].append(
-                                compute_solar_power(r_dep, r_sun,
-                                                    v_sc_eci=v_dep))
-                        continue
-
                     max_dv = 0.5
                     if dv_mag > max_dv:
                         dv_rtN = dv_rtN * (max_dv / dv_mag)

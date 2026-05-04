@@ -94,7 +94,7 @@ target_roes = [
 # T_orb  = 2 * np.pi * float(np.sqrt(a_c**3 / mu))
 # T_span = 5 * T_orb
 T_span = 6 * 30 * 24 * 3600
-N      = 1500 
+N      = 2000 
 times  = np.linspace(0, T_span, N)
 days   = times / 86400
 
