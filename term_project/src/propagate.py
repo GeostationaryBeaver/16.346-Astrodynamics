@@ -925,10 +925,6 @@ def apply_ROE(chief_orbit, roe):
     )
 
 
-
-# ------------------------------------
-# 6. PROPAGATION HELPER
-# ------------------------------------
 def get_eci_trajectories(times, init_date, chief_orbit, deputy_orbits):
     chief_prop = create_propagator(chief_orbit)
     dep_props = [create_propagator(o) for o in deputy_orbits]
@@ -1163,7 +1159,6 @@ def run_propagation_dsst(times, init_date, forces, chief_orbit, deputy_orbits,
         power = None
 
     return (a_v, e_v, i_v, raan_v, argp_v, M_v, alt_v, rel, dist, power)
-
 
 
 def compute_stm(dt, a, e, i, J2, R_e, mu):
@@ -2155,3 +2150,451 @@ def _create_dsst_from_mean_orbit(mean_orbit, forces):
 
     return propagator
 
+def run_propagation_dsst_pearls_sk(times, init_date, forces, chief_orbit,
+                                    deputy_orbits, J2, R_e, mu,
+                                    target_roes,
+                                    T_min_m, T_max_m,
+                                    min_dv=1e-12,
+                                    sun=None):
+    """
+    DSST propagation with deadband longitude-keeping for string-of-pearls.
+
+    The along-track separation T ≈ a·δλ is maintained within [T_min, T_max]
+    using a sawtooth control strategy:
+
+        1. Let δλ drift naturally (due to differential drag/SRP/J2 residuals)
+        2. When T crosses a deadband boundary, fire a single tangential burn
+           that reverses the drift direction
+        3. δλ drifts back across the deadband to the opposite boundary
+        4. Repeat
+
+    This is the fuel-optimal approach from Gaias & D'Amico (2015), Eq. 16-18:
+    the minimum ΔV to maintain a longitude window of width ΔT over time span
+    Δt is achieved by maximizing the drift duration between corrections.
+
+    Physics of the control law:
+    ─────────────────────────────
+    The along-track drift rate is:
+
+        Ṫ = a·δλ̇ ≈ -(3/2)·n·a·(δa/a) = -(3/2)·n·δa
+
+    Differential drag creates a slowly-growing δa, which causes T to
+    drift quadratically.  A tangential burn changes δa instantaneously:
+
+        δvT → Δ(δa) = (2/n)·δvT·a
+
+    The optimal strategy is to set δa such that T drifts from one
+    boundary to the other, taking as long as possible (minimizing
+    the number of burns and hence total ΔV).
+
+    At each boundary crossing, the required δa to reach the opposite
+    boundary in time τ (the drift time) is:
+
+        δa_needed = ±(2/3)·ΔT / (n·τ)
+
+    where ΔT = T_max - T_min is the deadband width.  Since we don't
+    know τ in advance (it depends on perturbation growth), we instead
+    compute the δa that gives the desired drift RATE:
+
+        Ṫ_desired = ±ΔT / τ_target
+
+    where τ_target is a tunable parameter (typically a few days).
+
+    Parameters
+    ----------
+    times : array-like of float
+        Output time stamps [s from init_date].
+    init_date : AbsoluteDate
+    forces : list
+        DSST force models.
+    chief_orbit : KeplerianOrbit
+    deputy_orbits : list of KeplerianOrbit
+    J2, R_e, mu : float
+    target_roes : list of np.ndarray (7,)
+        Target dimensional ROE [m] for each deputy.
+        Only the δλ component (index 2) is actively controlled.
+    T_min_m : float
+        Minimum allowed along-track separation [m].
+    T_max_m : float
+        Maximum allowed along-track separation [m].
+    min_dv : float
+        Minimum burn magnitude [m/s].
+    sun : CelestialBody or None
+
+    Returns
+    -------
+    tuple
+        (a, e, i, raan, argp, M, alt, rel, dist, power, dv_log)
+    """
+    eci  = FramesFactory.getEME2000()
+    itrf = FramesFactory.getITRF(IERSConventions.IERS_2010, True)
+
+    # ══════════════════════════════════════════════════════════════════
+    # Initialize formation propagators (same mean-element fix as helix)
+    # ══════════════════════════════════════════════════════════════════
+    chief_prop = create_dsst_propagator(chief_orbit, forces)
+    chief_mean_state = chief_prop.propagate(init_date)
+    chief_mean_kep = to_keplerian(chief_mean_state.getOrbit())
+    a_mean = float(chief_mean_kep.getA())
+
+    a_c_orig = float(chief_orbit.getA())
+    deputy_roes_dicts = []
+    for tgt in target_roes:
+        deputy_roes_dicts.append(dict(
+            da  = float(tgt[0] / a_c_orig),
+            dl  = float(tgt[2] / a_c_orig),
+            dex = float(tgt[5] / a_c_orig),
+            dey = float(tgt[6] / a_c_orig),
+            dix = float(tgt[3] / a_c_orig),
+            diy = float(tgt[4] / a_c_orig),
+        ))
+
+    dep_mean_orbits = [apply_ROE(chief_mean_kep, roe) for roe in deputy_roes_dicts]
+    dep_props = [_create_dsst_from_mean_orbit(orb, forces) for orb in dep_mean_orbits]
+    dep_orbits_current = list(dep_mean_orbits)
+
+    target_roes = [
+        a_mean * np.array([d['da'], 0.0, d['dl'],
+                           d['dix'], d['diy'],
+                           d['dex'], d['dey']])
+        for d in deputy_roes_dicts
+    ]
+
+    # ══════════════════════════════════════════════════════════════════
+    # Deadband parameters
+    # ══════════════════════════════════════════════════════════════════
+    T_center = (T_min_m + T_max_m) / 2.0       # deadband center [m]
+    T_half   = (T_max_m - T_min_m) / 2.0       # half-width [m]
+    dl_min   = T_min_m / a_mean                 # dimensionless δλ bounds
+    dl_max   = T_max_m / a_mean
+
+    n_chief  = np.sqrt(mu / a_mean**3)
+    T_orb    = 2.0 * np.pi / n_chief
+
+    # Drift time target: how long should it take to cross the deadband?
+    # Longer = fewer burns = less fuel, but less margin.
+    # A few days is typical for LEO formation keeping.
+    tau_drift_days = 5.0   # days to cross the full deadband
+    tau_drift = tau_drift_days * 86400.0
+
+    # Print setup
+    print(f"  Pearls SK: deadband [{T_min_m/1e3:.1f}, {T_max_m/1e3:.1f}] km, "
+          f"center={T_center/1e3:.1f} km, width={2*T_half/1e3:.1f} km")
+    print(f"  Drift crossing time: {tau_drift_days:.0f} days")
+
+    # Verify initial ROEs
+    for k, dep_kep in enumerate(dep_mean_orbits):
+        x0 = extract_roe(chief_mean_kep, dep_kep)
+        T0 = abs(x0[2])  # |a·δλ| = along-track separation
+        print(f"  Deputy {k} initial: T={T0:.0f} m, "
+              f"|δa|={abs(x0[0]):.1f} m, |δλ|={abs(x0[2]):.0f} m")
+
+    # ══════════════════════════════════════════════════════════════════
+    # Storage
+    # ══════════════════════════════════════════════════════════════════
+    a_v, e_v, i_v, raan_v, argp_v, M_v, alt_v = [], [], [], [], [], [], []
+    rel  = [[] for _ in deputy_orbits]
+    dist = [[] for _ in deputy_orbits]
+    dv_log = {k: [] for k in range(len(deputy_orbits))}
+
+    track_power = sun is not None
+    if track_power:
+        chief_power = []
+        dep_power = [[] for _ in deputy_orbits]
+
+    # Per-deputy state for the deadband controller
+    last_burn_time = {k: times[0] for k in range(len(deputy_orbits))}
+    # Minimum time between burns: at least half an orbit to let the
+    # DSST propagator settle after a state reset
+    min_burn_interval = 0.5 * T_orb
+
+    dt_step = times[1] - times[0] if len(times) > 1 else 1.0
+
+    # ══════════════════════════════════════════════════════════════════
+    # Main loop
+    # ══════════════════════════════════════════════════════════════════
+    for idx, t in enumerate(times):
+        date_t = init_date.shiftedBy(float(t))
+
+        # ── Chief ──
+        chief_state = chief_prop.propagate(date_t)
+        chief_kep   = to_keplerian(chief_state.getOrbit())
+        pv_c = chief_state.getPVCoordinates(eci)
+        p_c  = pv_c.getPosition()
+        v_c  = pv_c.getVelocity()
+
+        a_v.append(chief_kep.getA())
+        e_v.append(chief_kep.getE())
+        i_v.append(np.degrees(chief_kep.getI()))
+        raan_v.append(np.degrees(
+            chief_kep.getRightAscensionOfAscendingNode()))
+        argp_v.append(np.degrees(chief_kep.getPerigeeArgument()))
+        M_v.append(np.degrees(chief_kep.getMeanAnomaly()) % 360)
+
+        tr     = eci.getTransformTo(itrf, date_t)
+        p_itrf = tr.transformPVCoordinates(
+            PVCoordinates(p_c, Vector3D.ZERO)).getPosition()
+        alt_v.append(
+            p_itrf.getNorm() - Constants.WGS84_EARTH_EQUATORIAL_RADIUS)
+
+        r_vec = np.array([p_c.getX(), p_c.getY(), p_c.getZ()])
+        v_vec = np.array([v_c.getX(), v_c.getY(), v_c.getZ()])
+        r_hat = r_vec / np.linalg.norm(r_vec)
+        h_vec = np.cross(r_vec, v_vec)
+        h_hat = h_vec / np.linalg.norm(h_vec)
+        t_hat = np.cross(h_hat, r_hat)
+
+        if track_power:
+            r_sun = get_sun_position_eci(sun, date_t, eci)
+            chief_power.append(
+                compute_solar_power(r_vec, r_sun, v_sc_eci=v_vec))
+
+        # ── Deputies ──
+        for k in range(len(deputy_orbits)):
+            dep_state = dep_props[k].propagate(date_t)
+            dep_kep   = to_keplerian(dep_state.getOrbit())
+            pv_d      = dep_state.getPVCoordinates(eci)
+            p_d       = pv_d.getPosition()
+            v_d       = pv_d.getVelocity()
+
+            dr = np.array([
+                p_d.getX() - p_c.getX(),
+                p_d.getY() - p_c.getY(),
+                p_d.getZ() - p_c.getZ()
+            ])
+            rel[k].append([float(np.dot(dr, r_hat)),
+                           float(np.dot(dr, t_hat)),
+                           float(np.dot(dr, h_hat))])
+            dist[k].append(float(np.linalg.norm(dr)))
+
+            # ──────────────────────────────────────────────────────────
+            # DEADBAND LONGITUDE CONTROLLER
+            #
+            # The along-track separation is T = a × δλ (signed).
+            # For deputy k ahead of chief: δλ > 0 → T > 0
+            # For deputy k behind chief:   δλ < 0 → T < 0
+            #
+            # We track |T| and keep it within [T_min, T_max].
+            #
+            # When |T| hits a boundary:
+            #   - Compute the δa that would drift |T| toward the
+            #     opposite boundary over τ_drift seconds
+            #   - Fire a single tangential burn to establish that δa
+            #   - Wait until the next boundary crossing
+            #
+            # This produces a sawtooth pattern in |T| that bounces
+            # between T_min and T_max — the fuel-optimal strategy
+            # for longitude maintenance (Gaias & D'Amico 2015).
+            # ──────────────────────────────────────────────────────────
+            time_since_burn = t - last_burn_time[k]
+
+            if time_since_burn >= min_burn_interval and idx > 0:
+                x_now = extract_roe(chief_kep, dep_kep)
+                a_dep = float(dep_kep.getA())
+                n_dep = np.sqrt(mu / a_dep**3)
+
+                # Current state
+                T_now   = x_now[2]        # a·δλ [m]
+                T_abs   = abs(T_now)
+                da_now  = x_now[0]        # a·δ(a/a) [m]
+                sign_T  = np.sign(T_now) if abs(T_now) > 1.0 else np.sign(target_roes[k][2])
+
+                # Eccentricity and inclination errors (dimensional [m])
+                err_dex = x_now[5] - target_roes[k][5]
+                err_dey = x_now[6] - target_roes[k][6]
+                err_dix = x_now[3] - target_roes[k][3]
+                err_diy = x_now[4] - target_roes[k][4]
+                de_err_mag = np.sqrt(err_dex**2 + err_dey**2)
+                di_err_mag = np.sqrt(err_dix**2 + err_diy**2)
+
+                # Thresholds: correct δe/δi when oscillation amplitude
+                # exceeds fraction of deadband width
+                # Radial oscillation = a×δe, contributes to dist as ~a×δe
+                # We want this to stay below ~500m (1/6 of deadband width)
+                de_threshold = 500.0    # [m] max allowed δe growth
+                di_threshold = 500.0    # [m] max allowed δi growth
+
+                # ════════════════════════════════════════════════════
+                # PRIORITY 1: Deadband longitude control (same as before)
+                # ════════════════════════════════════════════════════
+                if sign_T > 0:
+                    exceeded_far  = T_now > T_max_m
+                    exceeded_near = T_now < T_min_m
+                else:
+                    exceeded_far  = T_now < -T_max_m
+                    exceeded_near = T_now > -T_min_m
+
+                boundary_near = T_min_m if sign_T > 0 else -T_min_m
+                boundary_far  = T_max_m if sign_T > 0 else -T_max_m
+
+                dvT = 0.0
+                dvN = 0.0
+                burn_reason = None
+
+                if exceeded_far or exceeded_near:
+                    # Aim for opposite boundary
+                    if exceeded_far:
+                        T_target = boundary_near
+                        burn_reason = "FAR"
+                    else:
+                        T_target = boundary_far
+                        burn_reason = "NEAR"
+
+                    T_dot_desired = (T_target - T_now) / tau_drift
+                    da_target_dimless = -T_dot_desired / ((3.0 / 2.0) * n_dep * a_dep)
+                    da_now_dimless = da_now / a_dep
+                    delta_da_dimless = da_target_dimless - da_now_dimless
+                    dvT = (n_dep / 2.0) * delta_da_dimless
+
+                # ════════════════════════════════════════════════════
+                # PRIORITY 2: Eccentricity vector maintenance
+                #
+                # From B-matrix: a tangential burn at argument of
+                # latitude u changes δe as:
+                #   Δ(δex) = (2cos u / n) × δvT
+                #   Δ(δey) = (2sin u / n) × δvT
+                #
+                # But we don't want to disturb δa (which controls δλ).
+                # Solution: use PAIRED burns at u and u+π that cancel
+                # in δa but add in δe. However, this requires waiting
+                # for the right u.
+                #
+                # Simpler approach for a deadband controller:
+                # Accept that tangential burns for δa also affect δe,
+                # and add a SEPARATE normal correction for δi.
+                # For δe, add a small correction when the longitude
+                # burn fires (it's already changing δe anyway).
+                #
+                # Even simpler: just correct δe/δi with small
+                # proportional feedback whenever they exceed threshold,
+                # accepting the small δa side-effect.
+                # ════════════════════════════════════════════════════
+                if de_err_mag > de_threshold and burn_reason is None:
+                    # Correct δe using tangential burn at current u
+                    # Effect: Δ(δex) = 2cos(u)×δvT/n, Δ(δey) = 2sin(u)×δvT/n
+                    # We project the error onto the achievable direction
+                    argp_d = float(dep_kep.getPerigeeArgument())
+                    M_d    = float(dep_kep.getMeanAnomaly())
+                    u_now  = argp_d + M_d
+                    cos_u  = np.cos(u_now)
+                    sin_u  = np.sin(u_now)
+
+                    # Achievable δe direction at this u: [2cos(u), 2sin(u)]/n
+                    # Project error onto this direction
+                    err_dex_dimless = err_dex / a_dep
+                    err_dey_dimless = err_dey / a_dep
+                    proj_e = err_dex_dimless * cos_u + err_dey_dimless * sin_u
+
+                    # Gain: correct 30% of projected error
+                    gain_e = 0.3
+                    dvT_e = -(gain_e * n_dep * proj_e) / 2.0
+
+                    dvT += dvT_e
+                    burn_reason = "δe"
+
+                # ════════════════════════════════════════════════════
+                # PRIORITY 3: Inclination vector maintenance
+                #
+                # Normal burns at argument of latitude u:
+                #   Δ(δix) = cos(u) × δvN / n
+                #   Δ(δiy) = sin(u) × δvN / n
+                #
+                # Project inclination error onto achievable direction.
+                # ════════════════════════════════════════════════════
+                if di_err_mag > di_threshold:
+                    argp_d = float(dep_kep.getPerigeeArgument())
+                    M_d    = float(dep_kep.getMeanAnomaly())
+                    u_now  = argp_d + M_d
+                    cos_u  = np.cos(u_now)
+                    sin_u  = np.sin(u_now)
+
+                    err_dix_dimless = err_dix / a_dep
+                    err_diy_dimless = err_diy / a_dep
+                    proj_i = err_dix_dimless * cos_u + err_diy_dimless * sin_u
+
+                    gain_i = 0.3
+                    dvN = -(gain_i * n_dep * proj_i)
+
+                    if burn_reason is None:
+                        burn_reason = "δi"
+                    else:
+                        burn_reason += "+δi"
+
+                # ════════════════════════════════════════════════════
+                # ASSEMBLE AND APPLY
+                # ════════════════════════════════════════════════════
+                if burn_reason is not None:
+                    dv_rtN = np.array([0.0, dvT, dvN])
+                    dv_mag = np.linalg.norm(dv_rtN)
+
+                    if dv_mag < min_dv:
+                        if track_power:
+                            r_dep = r_vec + dr
+                            v_dep = np.array([v_d.getX(), v_d.getY(),
+                                              v_d.getZ()])
+                            dep_power[k].append(
+                                compute_solar_power(r_dep, r_sun,
+                                                    v_sc_eci=v_dep))
+                        continue
+
+                    max_dv = 0.5
+                    if dv_mag > max_dv:
+                        dv_rtN = dv_rtN * (max_dv / dv_mag)
+                        dv_mag = max_dv
+
+                    try:
+                        dep_orbits_current[k], dep_props[k] = \
+                            _apply_impulsive_burn(
+                                dep_props[k], dep_orbits_current[k],
+                                dv_rtN, date_t, forces, eci, mu)
+                        dv_log[k].append((t, dv_rtN.copy()))
+                        last_burn_time[k] = t
+
+                        if "FAR" in burn_reason or "NEAR" in burn_reason:
+                            print(f"  t={t/86400:.1f}d dep{k} [{burn_reason}]: "
+                                  f"|T|={T_abs/1e3:.2f} km, "
+                                  f"dvT={dvT*1e6:.2f} μm/s, "
+                                  f"|δe_err|={de_err_mag:.0f} m, "
+                                  f"|δi_err|={di_err_mag:.0f} m")
+                        elif idx % 200 == 0:
+                            print(f"  t={t/86400:.1f}d dep{k} [{burn_reason}]: "
+                                  f"|δe_err|={de_err_mag:.0f} m, "
+                                  f"|δi_err|={di_err_mag:.0f} m, "
+                                  f"|dv|={dv_mag*1e6:.1f} μm/s")
+
+                    except ValueError as err:
+                        print(f"  [SK] Deputy {k} burn rejected at "
+                              f"t={t/86400:.1f}d: {err}")
+
+
+            # ── Power tracking ──
+            if track_power:
+                r_dep = r_vec + dr
+                v_dep = np.array([v_d.getX(), v_d.getY(), v_d.getZ()])
+                dep_power[k].append(
+                    compute_solar_power(r_dep, r_sun, v_sc_eci=v_dep))
+
+    # ══════════════════════════════════════════════════════════════════
+    # Package results
+    # ══════════════════════════════════════════════════════════════════
+    rel  = [np.array(rel[k])  for k in range(len(deputy_orbits))]
+    dist = [np.array(dist[k]) for k in range(len(deputy_orbits))]
+
+    if track_power:
+        power = {
+            "chief":    np.array(chief_power),
+            "deputies": [np.array(dep_power[k])
+                         for k in range(len(deputy_orbits))]
+        }
+    else:
+        power = None
+
+    for k in range(len(deputy_orbits)):
+        total_dv = sum(np.linalg.norm(dv) for (_, dv) in dv_log[k])
+        n_burns  = len(dv_log[k])
+        print(f"  Deputy {k}: {n_burns} burns, "
+              f"total ΔV = {total_dv:.4f} m/s "
+              f"({total_dv*1000:.1f} mm/s)")
+
+    return (a_v, e_v, i_v, raan_v, argp_v, M_v, alt_v,
+            rel, dist, power, dv_log)

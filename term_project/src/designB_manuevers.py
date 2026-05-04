@@ -23,17 +23,18 @@ from propagate import (
     Constants, IERSConventions,
     GravityFieldFactory,
     KeplerianOrbit, PositionAngleType,
-    init_close_helix_deputies,
+    init_string_of_pearls,
     apply_ROE, run_propagation_dsst,
     CelestialBodyFactory, get_i,
     DSSTZonal,
     build_full_force_model,
-    run_propagation_dsst_with_sk,
+    run_propagation_dsst_pearls_sk,
 )
 
 # ── Save directory ──
 THIS_DIR = Path(__file__).resolve().parent
-path = THIS_DIR.parent / "figs" / "maneuvers" / "design_A"
+path = THIS_DIR.parent / "figs" / "maneuvers" / "design_B"
+
 # ══════════════════════════════════════════════════════════════════════
 # SETUP
 # ══════════════════════════════════════════════════════════════════════
@@ -55,7 +56,7 @@ sun_ra = np.arctan2(sun_pv.getY(), sun_pv.getX())
 #                                   include_third_body=False)
 perturbs = build_full_force_model()
 
-max_dist = 1.5 #(km)
+max_dist = 5.0 #(km)
 
 # ══════════════════════════════════════════════════════════════════════
 # CHIEF ORBIT
@@ -75,8 +76,10 @@ chief_orbit = KeplerianOrbit(
 # ══════════════════════════════════════════════════════════════════════
 # DEPUTY INITIALIZATION — HELIX
 # ══════════════════════════════════════════════════════════════════════
-deputy_roes   = init_close_helix_deputies(chief_orbit, helix_radius_m=300)
+T_center = 3500.0   # [m] — center of [2 km, 5 km] window
+deputy_roes   = init_string_of_pearls(chief_orbit, separation_m=T_center)
 deputy_orbits = [apply_ROE(chief_orbit, r) for r in deputy_roes]
+
 a_c = float(chief_orbit.getA())
 target_roes = [
     a_c * np.array([roe['da'], 0.0, roe['dl'],
@@ -98,20 +101,20 @@ days   = times / 86400
 # ══════════════════════════════════════════════════════════════════════
 # PROPAGATION (with solar-power tracking via sun= argument)
 # ══════════════════════════════════════════════════════════════════════
-(a, e, i, raan, argp, M, alt, rel, dist, power, dv_log) = run_propagation_dsst_with_sk(
-                                                            times            = times,
-                                                            init_date        = initial_date,
-                                                            forces           = perturbs,
-                                                            chief_orbit      = chief_orbit,
-                                                            deputy_orbits    = deputy_orbits,
-                                                            J2               = 1.08263e-3,
-                                                            R_e              = Constants.WGS84_EARTH_EQUATORIAL_RADIUS,
-                                                            mu               = Constants.EIGEN5C_EARTH_MU,
-                                                            target_roes      = target_roes,
-                                                            safety_threshold = 450.0,      # 450 m from Spurmann & D'Amico
-                                                            duty_cycle_s     = 5400.0,     # ~one orbit replan cadence
-                                                            min_dv           = 1e-12,      # effectively zero — let ALL burns through
-                                                            sun              = sun,
+(a, e, i, raan, argp, M, alt, rel, dist, power, dv_log) = run_propagation_dsst_pearls_sk(
+                                                            times       = times,
+                                                            init_date   = initial_date,
+                                                            forces      = perturbs,
+                                                            chief_orbit = chief_orbit,
+                                                            deputy_orbits = deputy_orbits,
+                                                            J2          = 1.08263e-3,
+                                                            R_e         = Constants.WGS84_EARTH_EQUATORIAL_RADIUS,
+                                                            mu          = Constants.EIGEN5C_EARTH_MU,
+                                                            target_roes = target_roes,
+                                                            T_min_m     = 2000.0,     # 2 km minimum separation
+                                                            T_max_m     = 5000.0,     # 5 km maximum separation
+                                                            min_dv      = 1e-12,
+                                                            sun         = sun,
                                                         )
 
 # ══════════════════════════════════════════════════════════════════════
