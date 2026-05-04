@@ -267,3 +267,50 @@ def plot_asymmetric_sep(times_s, rel_list, title="", path=None):
     if path is not None:
         fig.savefig(f"{path}/asym_seps.png", dpi=200, bbox_inches="tight")
     return fig, ax
+
+def plot_dv_budget(times_s, dv_log, colors, labels, path=None):
+    """
+    Plot cumulative delta-V expenditure per deputy over time.
+
+    Parameters
+    ----------
+    times_s : array-like of float
+        Full time array [s] (used only for x-axis range).
+    dv_log : dict
+        {deputy_index: [(time_s, dv_RTN_array), ...]}
+    colors : list of str
+    labels : list of str
+    path : str or Path or None
+    """
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 8), sharex=True)
+
+    for k in sorted(dv_log.keys()):
+        if not dv_log[k]:
+            continue
+
+        burn_times = np.array([t for (t, _) in dv_log[k]]) / 86400.0
+        burn_mags  = np.array([np.linalg.norm(dv) for (_, dv) in dv_log[k]])
+        cumulative = np.cumsum(burn_mags)
+
+        ax1.step(burn_times, cumulative * 1000, where='post',
+                 color=colors[k], linewidth=1.2, label=labels[k])
+
+        ax2.bar(burn_times, burn_mags * 1000, width=0.5,
+                color=colors[k], alpha=0.6, label=labels[k])
+
+    ax1.set_ylabel("Cumulative ΔV [mm/s]")
+    ax1.set_title("Station-Keeping ΔV Budget")
+    ax1.legend(fontsize=9)
+    ax1.grid(True, linestyle="--", alpha=0.4)
+
+    ax2.set_xlabel("Time [days]")
+    ax2.set_ylabel("Burn magnitude [mm/s]")
+    ax2.set_title("Individual Burns")
+    ax2.legend(fontsize=9)
+    ax2.grid(True, linestyle="--", alpha=0.4)
+
+    fig.tight_layout()
+    if path is not None:
+        fig.savefig(f"{path}/DV_Budget.png", dpi=200, bbox_inches="tight")
+
+    return fig, (ax1, ax2)

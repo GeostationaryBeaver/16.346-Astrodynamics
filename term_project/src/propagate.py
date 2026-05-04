@@ -208,13 +208,6 @@ def build_full_force_model(gravity_degree=12, gravity_order=12,
         drag_force = DSSTAtmosphericDrag(atmosphere, drag_sc, float(mass_kg))
         
         forces.append(drag_force)
-        
-        # Isotropic drag model: force = 0.5 * Cd * A * ρ * v²
-        drag_sc = IsotropicDrag(float(cross_section), float(Cd))
-        
-        # DSST wrapper for atmospheric drag
-        drag_force = DSSTAtmosphericDrag(atmosphere, drag_sc, float(mass_kg))
-        forces.append(drag_force)
 
     # --- 5. Third-body perturbations (Sun and Moon) ---
     if include_third_body:
@@ -962,6 +955,55 @@ def get_eci_trajectories(times, init_date, chief_orbit, deputy_orbits):
     return chief_pts, dep_pts
 
 
+def initialize_formation_propagators(chief_orbit, deputy_orbits, forces, init_date):
+    """
+    Initialize chief + deputy propagators with consistent mean elements.
+    Deputies are initialized from the chief's mean state to preserve ROEs.
+    """
+    eci = FramesFactory.getEME2000()
+    
+    # Chief: standard osc→mean conversion
+    chief_prop = create_dsst_propagator(chief_orbit, forces)
+    chief_mean_kep = to_keplerian(chief_prop.propagate(init_date).getOrbit())
+    
+    # Deputies: apply ROEs to chief's mean state (no independent conversion)
+    a_c = float(chief_orbit.getA())
+    dep_props = []
+    for dep_orbit in deputy_orbits:
+        roe = extract_roe_dict(chief_orbit, dep_orbit)  # extract as dict
+        dep_mean = apply_ROE(chief_mean_kep, roe)
+        dep_props.append(_create_dsst_from_mean_orbit(dep_mean, forces))
+    
+    return chief_prop, dep_props
+
+
+def extract_roe_dict(chief_orbit, deputy_orbit):
+    """Extract ROE as a dictionary compatible with apply_ROE()."""
+    a_c = float(chief_orbit.getA())
+    e_c = float(chief_orbit.getE())
+    i_c = float(chief_orbit.getI())
+    raan_c = float(chief_orbit.getRightAscensionOfAscendingNode())
+    argp_c = float(chief_orbit.getPerigeeArgument())
+    M_c = float(chief_orbit.getMeanAnomaly())
+    
+    a_d = float(deputy_orbit.getA())
+    e_d = float(deputy_orbit.getE())
+    i_d = float(deputy_orbit.getI())
+    raan_d = float(deputy_orbit.getRightAscensionOfAscendingNode())
+    argp_d = float(deputy_orbit.getPerigeeArgument())
+    
+    return dict(
+        da  = (a_d - a_c) / a_c,
+        dl  = float(((argp_d + float(deputy_orbit.getMeanAnomaly())) 
+                     - (argp_c + M_c) 
+                     + (raan_d - raan_c) * np.cos(i_c))),
+        dex = e_d * np.cos(argp_d) - e_c * np.cos(argp_c),
+        dey = e_d * np.sin(argp_d) - e_c * np.sin(argp_c),
+        dix = i_d - i_c,
+        diy = (raan_d - raan_c) * np.sin(i_c),
+    )
+
+
 def run_propagation_dsst(times, init_date, forces, chief_orbit, deputy_orbits,
                          sun=None):
     """
@@ -1023,8 +1065,8 @@ def run_propagation_dsst(times, init_date, forces, chief_orbit, deputy_orbits,
             If ``sun`` was ``None``, returns ``None``.
     """
     # ------------------------------------------------------------------ setup
-    chief_prop = create_dsst_propagator(chief_orbit, forces)
-    dep_props = [create_dsst_propagator(o, forces) for o in deputy_orbits]
+    chief_prop, dep_props = initialize_formation_propagators(chief_orbit, deputy_orbits, forces, init_date)
+
 
     eci  = FramesFactory.getEME2000()
     itrf = FramesFactory.getITRF(IERSConventions.IERS_2010, True)
@@ -1121,4 +1163,995 @@ def run_propagation_dsst(times, init_date, forces, chief_orbit, deputy_orbits,
         power = None
 
     return (a_v, e_v, i_v, raan_v, argp_v, M_v, alt_v, rel, dist, power)
+
+
+
+def compute_stm(dt, a, e, i, J2, R_e, mu):
+    """
+    Compute the 7x7 state transition matrix Φ(t, t0) from Eq. (6)
+    of Gaias & Ardaens 2018.
+
+    The ROE state vector ordering is:
+        x = [aδa, aδȧ, aδλ, aδix, aδiy, aδex, aδey]
+              0     1    2    3     4     5     6
+
+    Parameters
+    ----------
+    dt  : float     — propagation interval [s]
+    a   : float     — chief semi-major axis [m]
+    e   : float     — chief eccentricity
+    i   : float     — chief inclination [rad]
+    J2  : float     — J2 coefficient (~1.08263e-3)
+    R_e : float     — Earth equatorial radius [m]
+    mu  : float     — Earth gravitational parameter [m^3/s^2]
+
+    Returns
+    -------
+    Phi : np.ndarray, shape (7, 7)
+    """
+    eta = np.sqrt(1.0 - e**2)
+    n   = np.sqrt(mu / a**3)
+    gam = (J2 / 2.0) * (R_e / (a * eta**2))**2   # γ
+
+    sin_i  = np.sin(i)
+    cos_i  = np.cos(i)
+    cos2_i = cos_i**2
+
+    # --- Scalar rate constants (Eq. 6) ---
+    nu      = -(3.0 / 2.0) * n
+    mu_A    = -(21.0 / 4.0) * n * gam * (3.0 * cos2_i - 1.0) * (eta + 1.0)
+    mu_I    = -(3.0 / 2.0) * n * gam * np.sin(2.0 * i) * (3.0 * eta + 4.0)
+    phi_dot =  (3.0 / 2.0) * n * gam * (5.0 * cos2_i - 1.0)   # ė-vector rotation
+    lam_A   =  (21.0 / 4.0) * n * gam * np.sin(2.0 * i)
+    lam_I   =  3.0 * n * gam * sin_i**2
+
+    nu_plus = nu + mu_A   # combined Keplerian + drag secular rate on δλ
+
+    # --- Eccentricity vector rotation angle ---
+    phi_rot = phi_dot * dt
+    c_phi   = np.cos(phi_rot)
+    s_phi   = np.sin(phi_rot)
+
+    # --- Assemble Φ (7×7) ---
+    Phi = np.zeros((7, 7))
+
+    # Row 0: aδa — constant (only maneuvers or drag change it)
+    Phi[0, 0] = 1.0
+
+    # Row 1: aδȧ — drag rate, constant between replans
+    Phi[1, 0] = dt          # δa grows linearly from current δȧ
+    Phi[1, 1] = 1.0
+
+    # Row 2: aδλ — along-track, most coupled element
+    Phi[2, 0] = 0.5 * nu_plus * dt**2
+    Phi[2, 1] = nu_plus * dt
+    Phi[2, 2] = 1.0
+    Phi[2, 3] = mu_I * dt   # J2 coupling from inclination difference
+
+    # Row 3: aδix — inclination x-component, no secular coupling
+    Phi[3, 3] = 1.0
+
+    # Row 4: aδiy — inclination y-component, secular drift from J2 on δix
+    Phi[4, 0] = 0.5 * lam_A * dt**2
+    Phi[4, 1] = lam_A * dt
+    Phi[4, 3] = lam_I * dt
+    Phi[4, 4] = 1.0
+
+    # Rows 5-6: aδe vector — rigid rotation at rate φ̇ (NOT linearized)
+    Phi[5, 5] =  c_phi
+    Phi[5, 6] = -s_phi
+    Phi[6, 5] =  s_phi
+    Phi[6, 6] =  c_phi
+
+    return Phi
+
+
+def extract_roe(chief_orbit, deputy_orbit):
+    """
+    Compute the quasi-nonsingular ROE vector from two KeplerianOrbits.
+    Returns the dimensional state vector x = a_c * [δa, δȧ, δλ, δix, δiy, δex, δey]
+    where δȧ = 0 at initialization (estimated by filter in flight).
+
+    Returns
+    -------
+    x : np.ndarray, shape (7,)   [m]
+    """
+    a_c    = float(chief_orbit.getA())
+    e_c    = float(chief_orbit.getE())
+    i_c    = float(chief_orbit.getI())
+    raan_c = float(chief_orbit.getRightAscensionOfAscendingNode())
+    argp_c = float(chief_orbit.getPerigeeArgument())
+    M_c    = float(chief_orbit.getMeanAnomaly())
+    u_c    = argp_c + M_c   # mean argument of latitude
+
+    a_d    = float(deputy_orbit.getA())
+    e_d    = float(deputy_orbit.getE())
+    i_d    = float(deputy_orbit.getI())
+    raan_d = float(deputy_orbit.getRightAscensionOfAscendingNode())
+    argp_d = float(deputy_orbit.getPerigeeArgument())
+    M_d    = float(deputy_orbit.getMeanAnomaly())
+
+    # Eccentricity vector components
+    ex_c = e_c * np.cos(argp_c);  ey_c = e_c * np.sin(argp_c)
+    ex_d = e_d * np.cos(argp_d);  ey_d = e_d * np.sin(argp_d)
+
+    da   = (a_d - a_c) / a_c
+    dex  = ex_d - ex_c
+    dey  = ey_d - ey_c
+    dix  = i_d - i_c
+    diy  = (raan_d - raan_c) * np.sin(i_c)
+
+    # Mean longitude difference — wrap to [-π, π]
+    u_d  = argp_d + M_d
+    dl   = (u_d - u_c) + (raan_d - raan_c) * np.cos(i_c)
+    dl   = (dl + np.pi) % (2 * np.pi) - np.pi
+
+    # Dimensional state vector, δȧ = 0 at epoch
+    x = a_c * np.array([da, 0.0, dl, dix, diy, dex, dey])
+    return x
+
+
+def passive_safety_margin(x_roe):
+    """
+    Compute the minimum cross-track (RN-plane) separation δr_RN^min
+    from Eq. (9) of Gaias & Ardaens 2018.
+
+    Uses numerical minimization over one orbit (3600 samples in
+    true anomaly) for robustness.  This is the collision-safety metric:
+    the formation is considered safe if δr_RN^min exceeds a threshold.
+
+    The RN-plane distance as a function of argument of latitude u is:
+
+        ρ²(u) = (aδi · sin(u - θ))² + (aδa - aδe · cos(u - θ - ϕ'))²
+
+    where θ = atan2(aδiy, aδix) is the phase of the inclination vector
+    and ϕ' = atan2(aδey, aδex) - θ is the relative phase between the
+    eccentricity and inclination vectors.
+
+    Parameters
+    ----------
+    x_roe : np.ndarray (7,)
+        Dimensional ROE state [m]:
+        [aδa, aδȧ, aδλ, aδix, aδiy, aδex, aδey]
+
+    Returns
+    -------
+    drmin : float
+        Minimum RN-plane separation [m].  Always ≥ 0.
+    """
+    ada  = x_roe[0]
+    adix = x_roe[3]
+    adiy = x_roe[4]
+    adex = x_roe[5]
+    adey = x_roe[6]
+
+    adi = np.sqrt(adix**2 + adiy**2)
+    ade = np.sqrt(adex**2 + adey**2)
+
+    phi_e = np.arctan2(adey, adex)  # eccentricity vector phase
+    phi_i = np.arctan2(adiy, adix)  # inclination vector phase
+
+    # Numerical minimization over one full orbit
+    u_test = np.linspace(0, 2 * np.pi, 3600)
+    rn_sq = (adi * np.sin(u_test - phi_i))**2 + \
+            (ada - ade * np.cos(u_test - phi_e))**2
+
+    return float(np.sqrt(np.min(rn_sq)))
+
+
+def compute_b_matrix(u_m, n, a):
+    """
+    Control input matrix B(t_m) from Eq. (B2): maps a 3-vector
+    [δvR, δvT, δvN] in RTN frame to a ROE jump Δx = a·B·δv.
+
+    The ordering matches x = [aδa, aδȧ, aδλ, aδix, aδiy, aδex, aδey].
+    Note: the δȧ row is zero — impulsive maneuvers don't change the
+    differential drag rate (that's a slow atmospheric effect).
+    """
+    sin_u = np.sin(u_m)
+    cos_u = np.cos(u_m)
+
+    # Eq. (B2), scaled by 1/n so that Δx = a · B · δv [m·m/s → m]
+    B = np.array([
+        [ 0.0,          2.0,      0.0    ],   # δa
+        [ 0.0,          0.0,      0.0    ],   # δȧ (unaffected by impulse)
+        [-2.0,          0.0,      0.0    ],   # δλ (radial → longitude coupling)
+        [ 0.0,          0.0,      cos_u  ],   # δix
+        [ 0.0,          0.0,      sin_u  ],   # δiy
+        [ sin_u,        2*cos_u,  0.0    ],   # δex
+        [-cos_u,        2*sin_u,  0.0    ],   # δey
+    ]) / n
+
+    return B   # units: [s], so that a·B·δv [m/s] → ROE [m]
+
+
+def plan_station_keeping(x0, x_target, t0, t_F, maneuver_times,
+                         chief_orbit, J2, R_e, mu):
+    """
+    Solve the minimum-ΔV station-keeping problem using the analytical
+    approach of Gaias & Ardaens 2018, Appendix A & B.
+
+    Split into three decoupled correction maneuvers:
+      1. Out-of-plane (δix, δiy): single normal burn at optimal u
+      2. Eccentricity vector (δex, δey): paired tangential burns
+      3. Along-track (δa + δλ): tangential burns that establish a
+         temporary δa offset to create the needed δλ drift, then
+         remove it at the end of the duty cycle.
+
+    The key insight for along-track control: δλ cannot be corrected
+    cheaply with radial burns. Instead, we establish a temporary
+    semi-major axis offset Δδa_temp that drifts at rate:
+
+        δλ̇ = ν · δa   where ν = -(3/2)n (Keplerian) + J2 terms
+
+    Over the duty cycle Δt:
+        Δδλ = ν · Δδa_temp · Δt
+
+    Solving:
+        Δδa_temp = Δδλ_needed / (ν · Δt)
+
+    This requires two tangential burns: one to establish Δδa at the
+    start, one to remove it at the end.
+
+    Parameters
+    ----------
+    x0 : np.ndarray (7,)
+        Current dimensional ROE state [m].
+        Order: [aδa, aδȧ, aδλ, aδix, aδiy, aδex, aδey]
+    x_target : np.ndarray (7,)
+        Target dimensional ROE state [m].
+    t0 : float
+        Current epoch offset [s].
+    t_F : float
+        End of duty cycle [s].
+    maneuver_times : list of float
+        Candidate burn times [s from init_date].
+    chief_orbit : KeplerianOrbit
+        Chief's current mean orbit.
+    J2, R_e, mu : float
+        Gravity constants.
+
+    Returns
+    -------
+    dv_schedule : list of (float, np.ndarray)
+        Each entry is (burn_time [s], delta_v_RTN [m/s]).
+        Sorted by burn time. Only non-negligible burns included.
+    """
+    a = float(chief_orbit.getA())
+    e = float(chief_orbit.getE())
+    i = float(chief_orbit.getI())
+    n = np.sqrt(mu / a**3)
+
+    eta    = np.sqrt(1.0 - e**2)
+    gam    = (J2 / 2.0) * (R_e / (a * eta**2))**2
+    phi_dot = (3.0 / 2.0) * n * gam * (5.0 * np.cos(i)**2 - 1.0)
+
+    dt = t_F - t0
+    if dt <= 0:
+        return []
+
+    # ── Natural propagation: what correction is needed? ──
+    Phi_F0 = compute_stm(dt, a, e, i, J2, R_e, mu)
+    b0 = x_target - Phi_F0 @ x0   # dimensional correction [m]
+
+    # Convert to dimensionless for burn computation
+    b0_dimless = b0 / a
+
+    # ════════════════════════════════════════════════════════════════
+    # SUBPROBLEM 1: OUT-OF-PLANE (δix, δiy)
+    # Single normal burn at argument of latitude u_N
+    # From B matrix: δix = cos(u)·δvN/n,  δiy = sin(u)·δvN/n
+    # ════════════════════════════════════════════════════════════════
+    b_dix = b0_dimless[3]
+    b_diy = b0_dimless[4]
+    di_mag = np.sqrt(b_dix**2 + b_diy**2)
+
+    oop_burns = []
+    if di_mag > 1e-8:
+        # Optimal burn latitude: u_N = atan2(δiy_needed, δix_needed)
+        u_N = np.arctan2(b_diy, b_dix)
+        # Magnitude: |δvN| = n · |δi|  [m/s, since δi is in radians]
+        dv_N_mag = n * di_mag
+
+        t_N, u_actual = _find_best_burn_slot(
+            u_N, maneuver_times, t0, chief_orbit, mu)
+
+        # Compute signed δvN to achieve the desired (δix, δiy) at u_actual
+        cos_ua = np.cos(u_actual)
+        sin_ua = np.sin(u_actual)
+        # From B: δix = cos(u)·δvN/n, δiy = sin(u)·δvN/n
+        # We need: b_dix = cos(u_actual)·δvN/n, b_diy = sin(u_actual)·δvN/n
+        # Use the component with larger leverage for numerical stability
+        if abs(cos_ua) > abs(sin_ua):
+            dv_N_signed = n * b_dix / cos_ua
+        else:
+            dv_N_signed = n * b_diy / sin_ua
+
+        oop_burns.append((t_N, np.array([0.0, 0.0, dv_N_signed])))
+
+    # ════════════════════════════════════════════════════════════════
+    # SUBPROBLEM 2: ECCENTRICITY VECTOR (δex, δey)
+    # Paired tangential burns at phase angle of Δδe
+    # From B: δex = (sin u · δvR + 2cos u · δvT) / n
+    #         δey = (-cos u · δvR + 2sin u · δvT) / n
+    # Optimal 2-burn: burns at u_bar and u_bar + π
+    # ════════════════════════════════════════════════════════════════
+    b_dex = b0_dimless[5]
+    b_dey = b0_dimless[6]
+    delta_e_mag = np.sqrt(b_dex**2 + b_dey**2)
+
+    ecc_burns = []
+    if delta_e_mag > 1e-8:
+        # Phase angle of required eccentricity change
+        u_bar = np.arctan2(b_dey, b_dex)
+
+        # Two tangential burns: at u_bar → +δvT, at u_bar+π → -δvT
+        # Each contributes δe_component = 2·δvT/n in the u_bar direction
+        # Total |Δδe| = 4·|δvT|/n  →  |δvT| = n·|Δδe|/4
+        dv_e_mag = n * delta_e_mag / 4.0
+
+        for k_offset in [0, 1]:
+            u_burn = u_bar + k_offset * np.pi
+            sign = 1.0 if k_offset == 0 else -1.0
+            t_best, _ = _find_best_burn_slot(
+                u_burn, maneuver_times, t0, chief_orbit, mu)
+            ecc_burns.append((t_best, np.array([0.0, sign * dv_e_mag, 0.0])))
+
+    # ════════════════════════════════════════════════════════════════
+    # SUBPROBLEM 3: ALONG-TRACK (δa and δλ)
+    #
+    # Strategy: combined δa + δλ correction using drift.
+    #
+    # The along-track drift rate is:
+    #   δλ̇ = ν_eff · δa/a
+    # where ν_eff = -(3/2)n + J2 correction (from STM row 2, col 1)
+    #
+    # We need to correct:
+    #   b_da  = target δa/a - propagated δa/a  (SMA ratio error)
+    #   b_dl  = target δλ - propagated δλ      (along-track error)
+    #
+    # Approach:
+    #   1. Compute total δa change needed: δa_total = δa_permanent + δa_drift
+    #      - δa_permanent = b_da (to fix the SMA offset)
+    #      - δa_drift = b_dl / (ν_eff · Δt/2) (temporary offset for drift)
+    #        The /2 accounts for the drift acting over half the cycle on average
+    #   2. Apply as two tangential burns:
+    #      - First burn: establish δa_total at start of cycle
+    #      - Second burn: remove δa_drift at end (keep only δa_permanent)
+    #
+    # From B matrix row 0: δ(a/a) = (2/n)·δvT
+    # So: δvT = n·δ(a/a)/2
+    # ════════════════════════════════════════════════════════════════
+    b_da = b0_dimless[0]   # needed δ(a/a) correction
+    b_dl = b0_dimless[2]   # needed δλ correction [rad]
+
+    # Effective along-track drift rate from the STM
+    # ν_eff = Φ[2,1] / dt  (the δλ sensitivity to δa over time)
+    # From compute_stm: Phi[2,1] = nu_plus * dt where nu_plus = ν + μ_A
+    nu_eff = -(3.0/2.0) * n + (-(21.0/4.0) * n * gam *
+              (3.0 * np.cos(i)**2 - 1.0) * (eta + 1.0))
+
+    at_burns = []
+
+    if abs(b_da) > 1e-8 or abs(b_dl) > 1e-7:
+        # Temporary δa offset to create the needed δλ drift
+        if abs(nu_eff * dt) > 1e-10:
+            da_drift = b_dl / (nu_eff * dt * 0.5)
+        else:
+            da_drift = 0.0
+
+        # Total δa at start of cycle
+        da_total_start = b_da + da_drift
+
+        # Burns:
+        # Burn 1 (start of cycle): establish da_total_start
+        #   δvT_1 = n · da_total_start / 2
+        # Burn 2 (end of cycle): remove drift component, keep permanent
+        #   δvT_2 = -n · da_drift / 2
+        dv_T1 = n * da_total_start / 2.0
+        dv_T2 = -n * da_drift / 2.0
+
+        # Find burn slots: first available and last available
+        t_first = maneuver_times[0]   # earliest candidate
+        t_last  = maneuver_times[-1]  # latest candidate
+
+        if abs(dv_T1) > 1e-8:
+            at_burns.append((t_first, np.array([0.0, dv_T1, 0.0])))
+        if abs(dv_T2) > 1e-8:
+            at_burns.append((t_last, np.array([0.0, dv_T2, 0.0])))
+
+    # ════════════════════════════════════════════════════════════════
+    # COMBINE AND SORT ALL BURNS
+    # ════════════════════════════════════════════════════════════════
+    all_burns = oop_burns + ecc_burns + at_burns
+    all_burns.sort(key=lambda b: b[0])
+
+    # Merge burns at same time slot (if two burns share a slot, sum them)
+    merged = []
+    for (t_b, dv) in all_burns:
+        if merged and abs(merged[-1][0] - t_b) < 1.0:
+            # Same slot → accumulate
+            merged[-1] = (merged[-1][0], merged[-1][1] + dv)
+        else:
+            merged.append((t_b, dv.copy()))
+
+    # Filter negligible burns
+    min_threshold = 1e-4  # 0.1 mm/s
+    merged = [(t_b, dv) for (t_b, dv) in merged
+              if np.linalg.norm(dv) > min_threshold]
+
+    # Safety cap: no single burn should exceed 1 m/s for station-keeping
+    # If it does, something is wrong upstream → clamp and warn
+    max_dv = 1.0  # m/s
+    clamped = []
+    for (t_b, dv) in merged:
+        mag = np.linalg.norm(dv)
+        if mag > max_dv:
+            print(f"  [SK WARNING] Clamping burn at t={t_b:.0f}s from "
+                  f"{mag*1000:.1f} mm/s to {max_dv*1000:.1f} mm/s")
+            dv = dv * (max_dv / mag)
+        clamped.append((t_b, dv))
+
+    return clamped
+
+
+def _find_best_burn_slot(target_u, maneuver_times, t0,
+                         chief_orbit, mu):
+    """
+    From a list of candidate maneuver times, find the one whose mean
+    argument of latitude is closest to target_u (mod π for paired burns).
+    Returns (best_time, actual_u_at_that_time).
+    """
+    a  = float(chief_orbit.getA())
+    n  = np.sqrt(mu / a**3)
+    T  = 2.0 * np.pi / n   # orbital period [s]
+
+    argp0 = float(chief_orbit.getPerigeeArgument())
+    M0    = float(chief_orbit.getMeanAnomaly())
+    u0    = argp0 + M0
+
+    best_t   = maneuver_times[0]
+    best_err = np.inf
+
+    for t_m in maneuver_times:
+        dt    = t_m - t0
+        u_m   = (u0 + n * dt) % (2.0 * np.pi)
+        err   = abs(((u_m - target_u + np.pi) % (2.0 * np.pi)) - np.pi)
+        if err < best_err:
+            best_err = err
+            best_t   = t_m
+            best_u   = u_m
+
+    return best_t, best_u
+
+
+def run_propagation_dsst_with_sk(times, init_date, forces, chief_orbit,
+                                  deputy_orbits, J2, R_e, mu,
+                                  target_roes,
+                                  safety_threshold,
+                                  duty_cycle_s,
+                                  min_dv=1e-3,
+                                  sun=None):
+    """
+    DSST propagation with direct-feedback ROE station keeping.
+
+    At every time step, for each deputy:
+      1. Extract current ROEs relative to the chief.
+      2. Compute the ROE error (current − target).
+      3. Invert the B matrix at the current argument of latitude to
+         find the RTN delta-v that would zero the error.
+      4. Apply a FRACTION (gain) of that correction as an impulse.
+      5. Restart the deputy propagator from the corrected mean orbit.
+
+    This is a proportional controller in ROE space. The gain controls
+    the tradeoff between responsiveness and fuel cost:
+      - gain = 1.0: correct all error immediately (expensive, aggressive)
+      - gain = 0.01: correct 1% per step (cheap, smooth, slight lag)
+
+    The controller naturally handles ALL perturbations because it
+    corrects whatever error has accumulated, regardless of source.
+
+    Parameters
+    ----------
+    times : array-like of float
+        Output time stamps [s from init_date].
+    init_date : AbsoluteDate
+    forces : list
+        DSST force models.
+    chief_orbit : KeplerianOrbit
+    deputy_orbits : list of KeplerianOrbit
+    J2, R_e, mu : float
+    target_roes : list of np.ndarray (7,)
+        Target dimensional ROE [m] for each deputy.
+    safety_threshold : float
+        Minimum δr_RN^min [m] (used for deadband).
+    duty_cycle_s : float
+        Minimum time between corrections [s]. Acts as a control
+        cadence to prevent excessive thruster cycling.
+    min_dv : float
+        Minimum burn magnitude [m/s]. Burns below this are skipped.
+    sun : CelestialBody or None
+
+    Returns
+    -------
+    tuple
+        (a, e, i, raan, argp, M, alt, rel, dist, power, dv_log)
+    """
+    eci  = FramesFactory.getEME2000()
+    itrf = FramesFactory.getITRF(IERSConventions.IERS_2010, True)
+
+    # Chief: normal initialization with osc→mean conversion
+    chief_prop = create_dsst_propagator(chief_orbit, forces)
+
+    # Extract the chief's converged mean Keplerian elements
+    chief_mean_state = chief_prop.propagate(init_date)
+    chief_mean_kep = to_keplerian(chief_mean_state.getOrbit())
+    a_mean = float(chief_mean_kep.getA())
+
+    # Reconstruct ROE dicts from the target_roes arrays
+    a_c_orig = float(chief_orbit.getA())
+    deputy_roes_dicts = []
+    for tgt in target_roes:
+        deputy_roes_dicts.append(dict(
+            da  = float(tgt[0] / a_c_orig),
+            dl  = float(tgt[2] / a_c_orig),
+            dex = float(tgt[5] / a_c_orig),
+            dey = float(tgt[6] / a_c_orig),
+            dix = float(tgt[3] / a_c_orig),
+            diy = float(tgt[4] / a_c_orig),
+        ))
+
+    # Apply ROEs to the chief's MEAN state → deputy mean orbits
+    dep_mean_orbits = [apply_ROE(chief_mean_kep, roe) for roe in deputy_roes_dicts]
+
+    # Initialize deputy propagators directly from mean elements (NO conversion)
+    dep_props = [_create_dsst_from_mean_orbit(orb, forces) for orb in dep_mean_orbits]
+    dep_orbits_current = list(dep_mean_orbits)
+
+    # Recompute target_roes using the MEAN chief SMA for consistency
+    target_roes = [
+        a_mean * np.array([d['da'], 0.0, d['dl'],
+                           d['dix'], d['diy'],
+                           d['dex'], d['dey']])
+        for d in deputy_roes_dicts
+    ]
+
+    # Print verification
+    for k, dep_kep in enumerate(dep_mean_orbits):
+        x0 = extract_roe(chief_mean_kep, dep_kep)
+        print(f"  Deputy {k} initial ROE error: "
+              f"|δa|={abs(x0[0]-target_roes[k][0]):.1f} m, "
+              f"|δλ|={abs(x0[2]-target_roes[k][2]):.1f} m, "
+              f"|δe|={np.sqrt((x0[5]-target_roes[k][5])**2+(x0[6]-target_roes[k][6])**2):.1f} m")
+
+
+    a_v, e_v, i_v, raan_v, argp_v, M_v, alt_v = [], [], [], [], [], [], []
+    rel  = [[] for _ in deputy_orbits]
+    dist = [[] for _ in deputy_orbits]
+    dv_log = {k: [] for k in range(len(deputy_orbits))}
+
+    track_power = sun is not None
+    if track_power:
+        chief_power = []
+        dep_power = [[] for _ in deputy_orbits]
+
+    last_burn_time = {k: times[0] for k in range(len(deputy_orbits))}
+
+    # ── Control gains ──
+    # These determine how aggressively each ROE component is corrected.
+    # Higher gain = faster correction but more fuel.
+    # Lower gain = smoother but allows temporary drift.
+    #
+    # The gain per step should account for the time-step size:
+    # effective_gain = gain_per_orbit × (dt_step / T_orbit)
+    # This ensures the controller behaves consistently regardless of
+    # output time resolution.
+    dt_step = times[1] - times[0] if len(times) > 1 else 1.0
+    T_orb   = 2.0 * np.pi * np.sqrt(float(chief_orbit.getA())**3 / mu)
+
+    # Gain per orbit for each ROE component:
+    # [δa, δȧ, δλ, δix, δiy, δex, δey]
+    # δȧ (index 1) is never corrected by impulses → gain = 0
+    # δλ needs the strongest correction (fastest drift)
+    # δe, δi need moderate correction
+    # δa needs careful correction (affects δλ drift rate)
+    gain_per_orbit = np.array([
+        0.5,   # δa:  moderate (affects drift)
+        0.0,   # δȧ:  cannot correct with impulse
+        0.8,   # δλ:  aggressive (main drift axis)
+        0.3,   # δix: gentle (slow drift)
+        0.3,   # δiy: gentle (slow drift)
+        0.3,   # δex: gentle
+        0.3,   # δey: gentle
+    ])
+
+    # Scale to per-step gain
+    gain = gain_per_orbit * min(dt_step / T_orb, 1.0)
+
+    for idx, t in enumerate(times):
+        date_t = init_date.shiftedBy(float(t))
+
+        # ══════════════════════════════════════════════════════════════
+        # CHIEF
+        # ══════════════════════════════════════════════════════════════
+        chief_state = chief_prop.propagate(date_t)
+        chief_kep   = to_keplerian(chief_state.getOrbit())
+        pv_c = chief_state.getPVCoordinates(eci)
+        p_c  = pv_c.getPosition()
+        v_c  = pv_c.getVelocity()
+
+        a_v.append(chief_kep.getA())
+        e_v.append(chief_kep.getE())
+        i_v.append(np.degrees(chief_kep.getI()))
+        raan_v.append(np.degrees(
+            chief_kep.getRightAscensionOfAscendingNode()))
+        argp_v.append(np.degrees(chief_kep.getPerigeeArgument()))
+        M_v.append(np.degrees(chief_kep.getMeanAnomaly()) % 360)
+
+        tr     = eci.getTransformTo(itrf, date_t)
+        p_itrf = tr.transformPVCoordinates(
+            PVCoordinates(p_c, Vector3D.ZERO)).getPosition()
+        alt_v.append(
+            p_itrf.getNorm() - Constants.WGS84_EARTH_EQUATORIAL_RADIUS)
+
+        r_vec = np.array([p_c.getX(), p_c.getY(), p_c.getZ()])
+        v_vec = np.array([v_c.getX(), v_c.getY(), v_c.getZ()])
+        r_hat = r_vec / np.linalg.norm(r_vec)
+        h_vec = np.cross(r_vec, v_vec)
+        h_hat = h_vec / np.linalg.norm(h_vec)
+        t_hat = np.cross(h_hat, r_hat)
+
+        if track_power:
+            r_sun = get_sun_position_eci(sun, date_t, eci)
+            chief_power.append(
+                compute_solar_power(r_vec, r_sun, v_sc_eci=v_vec))
+
+        # ══════════════════════════════════════════════════════════════
+        # DEPUTIES
+        # ══════════════════════════════════════════════════════════════
+        for k in range(len(deputy_orbits)):
+
+            # ── Propagate deputy ──
+            dep_state = dep_props[k].propagate(date_t)
+            dep_kep   = to_keplerian(dep_state.getOrbit())
+            pv_d      = dep_state.getPVCoordinates(eci)
+            p_d       = pv_d.getPosition()
+            v_d       = pv_d.getVelocity()
+
+            dr = np.array([
+                p_d.getX() - p_c.getX(),
+                p_d.getY() - p_c.getY(),
+                p_d.getZ() - p_c.getZ()
+            ])
+            rel[k].append([float(np.dot(dr, r_hat)),
+                           float(np.dot(dr, t_hat)),
+                           float(np.dot(dr, h_hat))])
+            dist[k].append(float(np.linalg.norm(dr)))
+
+            # ──────────────────────────────────────────────────────────
+            # STATION-KEEPING
+            # ──────────────────────────────────────────────────────────
+            time_since_burn = t - last_burn_time[k]
+
+            if time_since_burn >= duty_cycle_s and idx > 0:
+                # Measure current ROE state and error
+                x_now = extract_roe(chief_kep, dep_kep)
+                x_tgt = target_roes[k]
+                a_dep = float(dep_kep.getA())
+                n_dep = np.sqrt(mu / a_dep**3)
+
+                # Dimensional errors [m]
+                err = x_now - x_tgt
+                err_da  = err[0]        # [m] = a × δ(a/a)
+                err_dl  = err[2]        # [m] = a × δλ
+                err_dix = err[3]        # [m] = a × δix
+                err_diy = err[4]        # [m] = a × δiy
+                err_dex = err[5]        # [m] = a × δex
+                err_dey = err[6]        # [m] = a × δey
+
+                # ════════════════════════════════════════════════════════
+                # TANGENTIAL BURN: Controls δa (and δe as side-effect)
+                #
+                # Strategy: The DOMINANT error is δλ (along-track drift).
+                # We correct it by establishing a temporary δa offset that
+                # creates drift back toward the target.
+                #
+                # Required δa offset to zero δλ in time τ:
+                #   Δ(δa/a) = -δλ_error / ((3/2) n × τ)
+                #
+                # Then the tangential burn to create this δa:
+                #   δvT = (n/2) × Δ(δa/a) × a   ... NO!
+                #   δvT = (n/2) × Δ(δa/a)       [m/s, since B gives δ(a/a) = 2δvT/n]
+                # ════════════════════════════════════════════════════════
+
+                # Time horizon to correct δλ — shorter = more aggressive
+                tau = 1.0 * T_orb   # correct over 1 orbit
+
+                # Convert errors to dimensionless
+                err_da_dimless = err_da / a_dep      # δ(a/a)
+                err_dl_dimless = err_dl / a_dep      # δλ [rad]
+
+                # Desired δa correction = fix current δa error + extra to drift δλ back
+                nu_drift = -(3.0 / 2.0) * n_dep     # along-track drift rate [rad/s per δa/a]
+                
+                if abs(nu_drift * tau) > 1e-12:
+                    da_for_dl = -err_dl_dimless / (nu_drift * tau)
+                else:
+                    da_for_dl = 0.0
+
+                # Total desired δ(a/a) change this step
+                da_total_dimless = -err_da_dimless + da_for_dl
+
+                # Apply gain (don't try to fix everything at once)
+                gain_at = 0.5 * min(dt_step / T_orb, 1.0)
+                da_cmd = gain_at * da_total_dimless
+
+                # Convert to tangential burn: δ(a/a) = (2/n)×δvT → δvT = n×δ(a/a)/2
+                dvT = n_dep * da_cmd / 2.0
+
+                # ════════════════════════════════════════════════════════
+                # NORMAL BURN: Controls δix, δiy
+                #
+                # From B matrix: δix = cos(u)×δvN/n, δiy = sin(u)×δvN/n
+                # We want to reduce the inclination vector error.
+                # At the current u, the achievable correction is:
+                #   δvN → Δδix = cos(u)×δvN/n, Δδiy = sin(u)×δvN/n
+                #
+                # Optimal: project the error onto the achievable direction
+                # ════════════════════════════════════════════════════════
+                argp_d = float(dep_kep.getPerigeeArgument())
+                M_d    = float(dep_kep.getMeanAnomaly())
+                u_now  = argp_d + M_d
+
+                sin_u = np.sin(u_now)
+                cos_u = np.cos(u_now)
+
+                err_dix_dimless = err_dix / a_dep
+                err_diy_dimless = err_diy / a_dep
+
+                # Project inclination error onto the achievable direction at this u
+                # Achievable direction: [cos(u), sin(u)] in (δix, δiy) space
+                # Projection: component of error along [cos(u), sin(u)]
+                proj = err_dix_dimless * cos_u + err_diy_dimless * sin_u
+
+                # Gain for normal direction
+                gain_n = 0.3 * min(dt_step / T_orb, 1.0)
+                dvN_needed = -gain_n * n_dep * proj  # δvN = n × δi_proj, with sign
+
+                # ════════════════════════════════════════════════════════
+                # ASSEMBLE AND APPLY
+                # ════════════════════════════════════════════════════════
+                dv_rtN = np.array([0.0, dvT, dvN_needed])
+                dv_mag = np.linalg.norm(dv_rtN)
+
+                # Skip negligible burns
+                if dv_mag < min_dv:
+                    if track_power:
+                        r_dep = r_vec + dr
+                        v_dep = np.array([v_d.getX(), v_d.getY(), v_d.getZ()])
+                        dep_power[k].append(
+                            compute_solar_power(r_dep, r_sun, v_sc_eci=v_dep))
+                    continue
+
+                # Safety cap
+                max_dv_per_step = 0.5  # m/s
+                if dv_mag > max_dv_per_step:
+                    dv_rtN = dv_rtN * (max_dv_per_step / dv_mag)
+                    dv_mag = max_dv_per_step
+
+                # Apply burn
+                try:
+                    dep_orbits_current[k], dep_props[k] = \
+                        _apply_impulsive_burn(
+                            dep_props[k], dep_orbits_current[k],
+                            dv_rtN, date_t, forces, eci, mu)
+                    dv_log[k].append((t, dv_rtN.copy()))
+                    last_burn_time[k] = t
+
+                    if idx % 100 == 0:
+                        print(f"  t={t/86400:.1f}d dep{k}: "
+                              f"|dv|={dv_mag*1e3:.3f} mm/s "
+                              f"(T={dvT*1e3:.3f}, N={dvN_needed*1e6:.1f}μm/s) "
+                              f"|err_λ|={abs(err_dl)/1e3:.1f} km "
+                              f"|err_a|={abs(err_da):.0f} m "
+                              f"da_cmd={da_cmd:.2e}")
+
+                except ValueError as err:
+                    print(f"  [SK] Deputy {k} burn rejected at "
+                          f"t={t/86400:.1f}d: {err}")
+
+            # ── Power tracking ──
+            if track_power:
+                r_dep = r_vec + dr
+                v_dep = np.array([v_d.getX(), v_d.getY(), v_d.getZ()])
+                dep_power[k].append(
+                    compute_solar_power(r_dep, r_sun, v_sc_eci=v_dep))
+
+    # ══════════════════════════════════════════════════════════════════
+    # PACKAGE
+    # ══════════════════════════════════════════════════════════════════
+    rel  = [np.array(rel[k])  for k in range(len(deputy_orbits))]
+    dist = [np.array(dist[k]) for k in range(len(deputy_orbits))]
+
+    if track_power:
+        power = {
+            "chief":    np.array(chief_power),
+            "deputies": [np.array(dep_power[k])
+                         for k in range(len(deputy_orbits))]
+        }
+    else:
+        power = None
+
+    # Summary
+    for k in range(len(deputy_orbits)):
+        total_dv = sum(np.linalg.norm(dv) for (_, dv) in dv_log[k])
+        n_burns  = len(dv_log[k])
+        print(f"  Deputy {k}: {n_burns} burns, "
+              f"total ΔV = {total_dv:.4f} m/s "
+              f"({total_dv*1000:.1f} mm/s)")
+
+    return (a_v, e_v, i_v, raan_v, argp_v, M_v, alt_v,
+            rel, dist, power, dv_log)
+
+def _apply_impulsive_burn(dep_prop, dep_orbit_mean, dv_rtN,
+                          date_t, forces, eci, mu):
+    """
+    Apply an instantaneous ΔV to a deputy by computing the ROE-space
+    effect analytically and constructing a new mean-element orbit.
+
+    The procedure:
+      1. Extract mean Keplerian elements from the current DSST state.
+      2. Compute the B matrix (Eq. B2, Gaias & Ardaens 2018) that maps
+         RTN delta-v to dimensionless ROE changes.
+      3. Multiply by a to get dimensional ROE changes [m].
+      4. Apply the ROE changes to the mean elements.
+      5. Validate the resulting orbit (periapsis check).
+      6. Restart the DSST propagator from the new mean orbit.
+
+    Parameters
+    ----------
+    dep_prop : DSSTPropagator
+        Current deputy propagator.
+    dep_orbit_mean : KeplerianOrbit
+        Current deputy mean orbit (used as fallback reference).
+    dv_rtN : np.ndarray, shape (3,)
+        Impulsive delta-v in RTN frame [m/s]: [radial, tangential, normal].
+    date_t : AbsoluteDate
+        Epoch of the burn.
+    forces : list
+        DSST force models for the new propagator.
+    eci : Frame
+        ECI reference frame.
+    mu : float
+        Earth gravitational parameter [m³/s²].
+
+    Returns
+    -------
+    new_mean_orbit : KeplerianOrbit
+        Post-burn mean-element orbit.
+    new_prop : DSSTPropagator
+        Fresh propagator initialized at the post-burn state.
+
+    Raises
+    ------
+    ValueError
+        If the burn produces an unphysical orbit (SMA ratio > 2 or < 0.5,
+        or periapsis below 100 km).
+    """
+    # ── Step 1: Extract current mean elements ──
+    mean_state = dep_prop.propagate(date_t)
+    mean_orbit = to_keplerian(mean_state.getOrbit())
+
+    a    = float(mean_orbit.getA())
+    e    = float(mean_orbit.getE())
+    i    = float(mean_orbit.getI())
+    raan = float(mean_orbit.getRightAscensionOfAscendingNode())
+    argp = float(mean_orbit.getPerigeeArgument())
+    M    = float(mean_orbit.getMeanAnomaly())
+    n    = np.sqrt(mu / a**3)
+    u_m  = argp + M  # mean argument of latitude at burn epoch
+
+    # ── Step 2: B matrix (Eq. B2) — maps δv → DIMENSIONLESS ROE δα ──
+    sin_u = np.sin(u_m)
+    cos_u = np.cos(u_m)
+
+    # B / n gives dimensionless ROE change per m/s of delta-v
+    # Row order: [δ(a/a), δȧ, δλ, δix, δiy, δex, δey]
+    B_dimless = np.array([
+        [ 0.0,       2.0,      0.0    ],   # δ(a/a)  = (2/n)·δvT
+        [ 0.0,       0.0,      0.0    ],   # δȧ (unaffected)
+        [-2.0,       0.0,      0.0    ],   # δλ = -(2/n)·δvR
+        [ 0.0,       0.0,      cos_u  ],   # δix = (cos u / n)·δvN
+        [ 0.0,       0.0,      sin_u  ],   # δiy = (sin u / n)·δvN
+        [ sin_u,     2*cos_u,  0.0    ],   # δex
+        [-cos_u,     2*sin_u,  0.0    ],   # δey
+    ]) / n  # units: [s] per [m/s] → dimensionless
+
+    # ── Step 3: DIMENSIONLESS ROE change ──
+    d_roe_dimless = B_dimless @ dv_rtN  # dimensionless δα vector
+
+    # ── Step 4: Validate before applying ──
+    new_a_over_a = 1.0 + d_roe_dimless[0]  # δ(a/a) is already a ratio
+    if new_a_over_a <= 0.5 or new_a_over_a >= 2.0:
+        raise ValueError(
+            f"Burn produces unphysical SMA ratio {new_a_over_a:.6f}. "
+            f"ΔV={dv_rtN} m/s at u={np.degrees(u_m):.1f}°."
+        )
+
+    # ── Step 5: Apply dimensionless ROE changes to mean elements ──
+    # These are the DIMENSIONLESS quasi-nonsingular ROE offsets:
+    #   d_roe_dimless[0] = δ(a)/a     (relative SMA change)
+    #   d_roe_dimless[2] = δλ         (mean longitude change)
+    #   d_roe_dimless[3] = δix        (inclination change) [rad]
+    #   d_roe_dimless[4] = δiy        (RAAN-like change) [rad·sin(i)]
+    #   d_roe_dimless[5] = δex        (eccentricity x-component change)
+    #   d_roe_dimless[6] = δey        (eccentricity y-component change)
+
+    a_new = a * new_a_over_a
+
+    ex_c = e * np.cos(argp)
+    ey_c = e * np.sin(argp)
+
+    ex_new  = ex_c + d_roe_dimless[5]
+    ey_new  = ey_c + d_roe_dimless[6]
+    e_new   = float(np.sqrt(ex_new**2 + ey_new**2))
+    argp_new = float(np.arctan2(ey_new, ex_new))
+
+    i_new    = float(i + d_roe_dimless[3])
+    raan_new = float(raan + d_roe_dimless[4] / np.sin(i))
+
+    d_argp = argp_new - argp
+    M_new  = float(M + d_roe_dimless[2] - d_argp)
+
+    # ── Step 6: Periapsis safety check ──
+    R_e = Constants.WGS84_EARTH_EQUATORIAL_RADIUS
+    periapsis_alt = a_new * (1.0 - e_new) - R_e
+    if periapsis_alt < 100e3:
+        raise ValueError(
+            f"Post-burn periapsis altitude {periapsis_alt/1e3:.1f} km is "
+            f"below 100 km. ΔV={dv_rtN} m/s, e_new={e_new:.6f}"
+        )
+
+    # ── Step 7: Construct new orbit and restart propagator ──
+    new_mean_orbit = KeplerianOrbit(
+        float(a_new), float(e_new), float(i_new),
+        float(argp_new), float(raan_new), float(M_new),
+        PositionAngleType.MEAN, eci, date_t, mu
+    )
+
+    new_prop = _create_dsst_from_mean_orbit(new_mean_orbit, forces)
+    return new_mean_orbit, new_prop
+
+def _create_dsst_from_mean_orbit(mean_orbit, forces):
+    """
+    Create a DSST propagator directly from an orbit already in mean-element
+    space, bypassing the computeMeanState osculating→mean conversion.
+
+    This is safe when the orbit was derived analytically from DSST mean
+    element output (as in _apply_impulsive_burn above) rather than from
+    osculating PV coordinates.
+
+    The only difference from create_dsst_propagator is that we call
+    setInitialState with the orbit directly, wrapped in SpacecraftState,
+    without the computeMeanState round-trip.
+    """
+    min_step = 1.0
+    max_step = 86400.0
+    abs_tol  = [1e-3] * 7
+    rel_tol  = [1e-9] * 7
+    integrator = DormandPrince853Integrator(min_step, max_step, abs_tol, rel_tol)
+
+    propagator = DSSTPropagator(integrator, PropagationType.MEAN)
+
+    for force in forces:
+        propagator.addForceModel(force)
+
+    for force_model in propagator.getAllForceModels():
+        force_model.registerAttitudeProvider(propagator.getAttitudeProvider())
+
+    # Set initial state directly as mean elements — no conversion needed
+    mean_spacecraft_state = SpacecraftState(mean_orbit)
+    propagator.setInitialState(mean_spacecraft_state, PropagationType.MEAN)
+
+    return propagator
 

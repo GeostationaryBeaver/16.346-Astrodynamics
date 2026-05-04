@@ -28,12 +28,12 @@ from propagate import (
     CelestialBodyFactory, get_i,
     DSSTZonal,
     build_full_force_model,
-    init_string_of_pearls,
+    run_propagation_dsst_with_sk,
 )
 
 # ── Save directory ──
 THIS_DIR = Path(__file__).resolve().parent
-path = None#THIS_DIR.parent / "figs" / "full_force_model" / "design_B"
+path = None#THIS_DIR.parent / "figs" / "full_force_model" / "design_A" / "pearls"
 
 # ══════════════════════════════════════════════════════════════════════
 # SETUP
@@ -51,10 +51,12 @@ sun_pv = sun.getPVCoordinates(initial_date, eci).getPosition()
 sun_ra = np.arctan2(sun_pv.getY(), sun_pv.getX())
 
 # ── Force model: J2 only ──
-# perturbs = build_full_force_model(gravity_degree=2, gravity_order=0, include_drag=False,include_srp=False, include_third_body=False)
+# perturbs = build_full_force_model(gravity_degree=2, gravity_order=0,
+#                                   include_drag=False,include_srp=False,
+#                                   include_third_body=False)
 perturbs = build_full_force_model()
 
-max_dist = 5.0
+max_dist = 1.5 #(km)
 
 # ══════════════════════════════════════════════════════════════════════
 # CHIEF ORBIT
@@ -74,26 +76,44 @@ chief_orbit = KeplerianOrbit(
 # ══════════════════════════════════════════════════════════════════════
 # DEPUTY INITIALIZATION — HELIX
 # ══════════════════════════════════════════════════════════════════════
-init_sep = 2e3 #m
-deputy_roes   = init_string_of_pearls(chief_orbit, init_sep)
+deputy_roes   = init_close_helix_deputies(chief_orbit, helix_radius_m=300)
 deputy_orbits = [apply_ROE(chief_orbit, r) for r in deputy_roes]
+a_c = float(chief_orbit.getA())
+target_roes = [
+    a_c * np.array([roe['da'], 0.0, roe['dl'],
+                    roe['dix'], roe['diy'],
+                    roe['dex'], roe['dey']])
+    for roe in deputy_roes
+]
 
 # ══════════════════════════════════════════════════════════════════════
 # TIME GRID
 # ══════════════════════════════════════════════════════════════════════
-T_orb  = 2 * np.pi * float(np.sqrt(a_c**3 / mu))
-T_span = 5 * T_orb
-# T_span = 6 * 30 * 24 * 3600
-N      = 1500
+# T_orb  = 2 * np.pi * float(np.sqrt(a_c**3 / mu))
+# T_span = 5 * T_orb
+T_span = 3 * 30 * 24 * 3600
+N      = 1500 
 times  = np.linspace(0, T_span, N)
 days   = times / 86400
 
 # ══════════════════════════════════════════════════════════════════════
 # PROPAGATION (with solar-power tracking via sun= argument)
 # ══════════════════════════════════════════════════════════════════════
-(a, e, i, raan, argp, M, alt, rel, dist, power) = run_propagation_dsst(
-    times, initial_date, perturbs, chief_orbit, deputy_orbits, sun=sun
-)
+(a, e, i, raan, argp, M, alt, rel, dist, power, dv_log) = run_propagation_dsst_with_sk(
+                                                            times            = times,
+                                                            init_date        = initial_date,
+                                                            forces           = perturbs,
+                                                            chief_orbit      = chief_orbit,
+                                                            deputy_orbits    = deputy_orbits,
+                                                            J2               = 1.08263e-3,
+                                                            R_e              = Constants.WGS84_EARTH_EQUATORIAL_RADIUS,
+                                                            mu               = Constants.EIGEN5C_EARTH_MU,
+                                                            target_roes      = target_roes,
+                                                            safety_threshold = 450.0,      # 450 m from Spurmann & D'Amico
+                                                            duty_cycle_s     = 5400.0,     # ~one orbit replan cadence
+                                                            min_dv           = 1e-12,      # effectively zero — let ALL burns through
+                                                            sun              = sun,
+                                                        )
 
 # ══════════════════════════════════════════════════════════════════════
 # PLOTTING
@@ -107,5 +127,7 @@ plotting.plot_intrack_crosstrack(rel, colors, labels, path=path)
 plotting.plot_solar_power(times, power, colors, labels, path=path)
 plotting.plot_mean_separation_with_exits(times, rel, labels, colors, max_dist, "", path=path)
 plotting.plot_asymmetric_sep(times,rel, path=path)
+plotting.plot_dv_budget(times, dv_log, colors, labels, path=path)
 
 plt.show()
+

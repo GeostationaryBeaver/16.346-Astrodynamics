@@ -76,8 +76,7 @@ chief_orbit = KeplerianOrbit(
 # ══════════════════════════════════════════════════════════════════════
 # DEPUTY INITIALIZATION — HELIX
 # ══════════════════════════════════════════════════════════════════════
-# deputy_roes   = init_close_helix_deputies(chief_orbit, helix_radius_m=300)
-deputy_roes = init_string_of_pearls(chief_orbit, separation_m=500.0)
+deputy_roes   = init_close_helix_deputies(chief_orbit, helix_radius_m=300)
 deputy_orbits = [apply_ROE(chief_orbit, r) for r in deputy_roes]
 
 # ══════════════════════════════════════════════════════════════════════
