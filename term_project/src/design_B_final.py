@@ -33,7 +33,7 @@ from propagate import (
 
 # ── Save directory ──
 THIS_DIR = Path(__file__).resolve().parent
-path = None#THIS_DIR.parent / "figs" / "full_force_model" / "design_B"
+path = THIS_DIR.parent / "figs" / "full_force_model" / "design_B"
 
 # ══════════════════════════════════════════════════════════════════════
 # SETUP
@@ -81,9 +81,9 @@ deputy_orbits = [apply_ROE(chief_orbit, r) for r in deputy_roes]
 # ══════════════════════════════════════════════════════════════════════
 # TIME GRID
 # ══════════════════════════════════════════════════════════════════════
-T_orb  = 2 * np.pi * float(np.sqrt(a_c**3 / mu))
-T_span = 5 * T_orb
-# T_span = 6 * 30 * 24 * 3600
+# T_orb  = 2 * np.pi * float(np.sqrt(a_c**3 / mu))
+# T_span = 5 * T_orb
+T_span = 6 * 30 * 24 * 3600
 N      = 1500
 times  = np.linspace(0, T_span, N)
 days   = times / 86400
