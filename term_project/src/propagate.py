@@ -735,33 +735,6 @@ def init_close_helix_deputies(
     """
     Initialize two deputies in a helix formation WITH J2-invariant conditions.
 
-    Unlike the naive helix initializer that sets δa = 0, this function
-    computes the required δa from the J2-invariant conditions:
-
-        δΩ̇ = 0   →   constrains δa as a function of δi
-        δ(Ṁ + ω̇) = 0   →   provides second constraint relating δa, δe, δi
-
-    The resulting formation has a small but non-zero semi-major axis offset
-    that exactly cancels the differential J2 precession caused by δe and δi.
-    This prevents the secular along-track drift that otherwise dominates
-    relative motion on timescales of weeks to months.
-
-    For a near-circular chief (e_c ≈ 0), the J2-invariant conditions reduce to:
-
-        Condition 1 (δΩ̇ = 0):
-            δa/a = -(2/7) × tan(i_c) × δi_x
-
-        Condition 2 (δ(Ṁ + ω̇) = 0):
-            δa/a = [4η(5cos²i - 1)/(2η+1)(7(1-3sin²i/2)η + 4(5cos²i-1))] 
-                   × sin(2i)/(1 - 5cos²i) × ... (complex)
-
-    In practice for SSO inclinations (~98°), both conditions are approximately
-    satisfied by the same δa when δe is small relative to δi, because the
-    eccentricity coupling terms are suppressed by the near-circular geometry.
-
-    The implementation uses the full Schaub & Junkins formulation (§13.6)
-    for the combined secular rate matching.
-
     Parameters
     ----------
     chief_orbit : KeplerianOrbit
@@ -793,30 +766,6 @@ def init_close_helix_deputies(
     de_mag = helix_radius_m / a
     di_mag = (2.0 * helix_radius_m) / a
 
-
-    # phi = u0
-    # theta = u0
-
-    # dex = de_mag * np.cos(phi)
-    # dey = de_mag * np.sin(phi)
-    # dix = di_mag * np.cos(theta)
-    # diy = di_mag * np.sin(theta)
-
-    # eta = np.sqrt(1.0 - e_c**2)
-    # p = a * (1.0 - e_c**2)
-    # sin_i = np.sin(i_c)
-    # cos_i = np.cos(i_c)
-    # tan_i = sin_i / cos_i  # Note: negative for i > 90° (retrograde SSO)
-
-    # # Gamma factor: (Re/p)²
-    # gamma = (R_e / p)**2
-
-
-    # da_over_a_from_raan = -(2.0 / 7.0) * tan_i * di_mag
-
-
-    # da_over_a = da_over_a_from_raan
-
     phi   =  np.pi / 2   # relative eccentricity vector phase
     theta = -np.pi / 2   # relative inclination vector phase (anti-parallel: phi = -theta)
 
@@ -839,6 +788,7 @@ def init_close_helix_deputies(
         # dl = T_offset/a - 2*curr_dey*cos(u0)
         T_offset = sign * mean_dist_m
         dl = (T_offset / a) + 2.0 * curr_dex * np.sin(u0) - 2.0 * curr_dey * np.cos(u0)
+        dl = T_offset/a
 
         roes.append(dict(
             da=float(curr_da_over_a),
@@ -880,10 +830,11 @@ def apply_ROE(chief_orbit, roe):
     argp_d = float(np.arctan2(ey_d, ex_d))
 
     i_d = float(i_c + roe["dix"])
-    raan_d = float(raan_c + roe["diy"] / np.sin(i_c))
-
+    d_raan = roe["diy"] / np.sin(i_c)
+    raan_d = float(raan_c + d_raan)
     d_argp = argp_d - argp_c
-    M_d = float(M_c + roe["dl"] - d_argp)
+    # M_d = float(M_c + roe["dl"] - d_argp)
+    M_d = float(M_c + roe["dl"] - d_argp - d_raan * np.cos(i_c))
 
     return KeplerianOrbit(
         a_d, e_d, i_d, argp_d, raan_d, M_d,
